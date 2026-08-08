@@ -1,0 +1,104 @@
+:root {
+  /* Oscuro neutro, no verde saturado. Un solo acento frío y sobrio. */
+  --bg: #0c0e12;
+  --surface: #14171d;
+  --surface-alt: #1b1f27;
+  --border: #262b34;
+  --border-soft: #1f242c;
+  --text: #e7eaef;
+  --text-dim: #8a93a1;
+  --accent: #6b8afd;
+  --accent-hover: #7d99ff;
+  --accent-text: #ffffff;
+  --accent-soft: rgba(107,138,253,.12);
+  --danger: #e5686b;
+  --warning: #d9a441;
+  --ok: #5bbf88;
+  --radius: 8px;
+  --radius-lg: 12px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h2 { font-weight: 600; letter-spacing: -0.01em; }
+
+input, textarea, select, button { font-family: inherit; font-size: 14px; }
+
+input, textarea, select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 9px 11px;
+  width: 100%;
+  transition: border-color .15s ease;
+}
+input::placeholder, textarea::placeholder { color: var(--text-dim); }
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+label { font-size: 13px; color: var(--text-dim); }
+label input, label textarea, label select { margin-top: 4px; color: var(--text); }
+
+button {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 9px 15px;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+button:hover { background: var(--border-soft); border-color: var(--border); }
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: 1px solid var(--accent);
+  font-weight: 500;
+}
+button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+}
+
+.hint { color: var(--text-dim); font-size: 13px; margin: 4px 0 0; }
+.hint.error { color: var(--danger); }
+
+.pill {
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease;
+}
+.pill:hover { border-color: var(--text-dim); }
+.pill.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.badge { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 500; }
+.badge.borrador { background: rgba(138,147,161,.12); color: var(--text-dim); }
+.badge.en_prueba { background: rgba(217,164,65,.14); color: var(--warning); }
+.badge.listo { background: rgba(91,191,136,.14); color: var(--ok); }
