@@ -1,0 +1,349 @@
+// Pantalla jugable real, sin login: a esta la abre directo el
+// jugador cuando toca el juego en el portal de Win777, con
+// ?slug=...&token=...&operador=... en la URL. El token identifica
+// al jugador pero por sí solo no mueve plata — cada giro lo resuelve
+// el servidor (/api/jugar-girar), nunca el navegador.
+//
+// Es la versión "solo mostrar" de lo que hace preview.js: mismas
+// capas, misma animación de rodillos, mismo cuadro de premio — pero
+// sin el editor ni el panel de ajuste, porque acá no se edita nada,
+// solo se juega.
+
+import './styles.css';
+
+const params = new URLSearchParams(location.search);
+const slug = params.get('slug');
+const token = params.get('token');
+const raiz = document.getElementById('app');
+
+raiz.innerHTML = '<p class="hint" style="padding:40px; text-align:center">Cargando...</p>';
+arrancar();
+
+async function arrancar() {
+  if (!slug || !token) {
+    mostrarError('Falta el juego o el token de acceso.');
+    return;
+  }
+  try {
+    const [datos, balance] = await Promise.all([
+      fetchJson(`/api/jugar-datos?slug=${encodeURIComponent(slug)}`),
+      fetchJson(`/api/jugar-balance?token=${encodeURIComponent(token)}`),
+    ]);
+    render(datos, balance.saldo);
+  } catch (err) {
+    mostrarError(err.message || 'No se pudo cargar el juego.');
+  }
+}
+
+function mostrarError(msg) {
+  raiz.innerHTML = `<p style="padding:40px; text-align:center; color:var(--danger)">${escapeHtml(msg)}</p>`;
+}
+
+async function fetchJson(url, opciones) {
+  const res = await fetch(url, opciones);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Error de red');
+  return data;
+}
+
+function conDefaults(juego) {
+  return {
+    fondo_pantalla_x: juego.fondo_pantalla_x ?? 50, fondo_pantalla_y: juego.fondo_pantalla_y ?? 50,
+    fondo_pantalla_ancho: juego.fondo_pantalla_ancho ?? 100, fondo_pantalla_alto: juego.fondo_pantalla_alto ?? 100,
+    marco_x: juego.marco_x ?? 50, marco_y: juego.marco_y ?? 50,
+    marco_ancho: juego.marco_ancho ?? 100, marco_alto: juego.marco_alto ?? 100,
+    grilla_x: juego.grilla_x ?? 50, grilla_y: juego.grilla_y ?? 46,
+    grilla_tamano: juego.grilla_tamano ?? 70,
+    cartel_x: juego.cartel_x ?? 50, cartel_y: juego.cartel_y ?? 15,
+    cartel_ancho: juego.cartel_ancho ?? 75, cartel_alto: juego.cartel_alto ?? 16,
+    fondo_pantalla_blur: juego.fondo_pantalla_blur ?? 0, fondo_pantalla_oscurecer: juego.fondo_pantalla_oscurecer ?? 0,
+    marco_blur: juego.marco_blur ?? 0, marco_oscurecer: juego.marco_oscurecer ?? 0,
+    cartel_blur: juego.cartel_blur ?? 0, cartel_oscurecer: juego.cartel_oscurecer ?? 0,
+    fondo_blur: juego.fondo_blur ?? 0, fondo_oscurecer: juego.fondo_oscurecer ?? 0,
+  };
+}
+
+function ordenPorDefecto(juego) {
+  const orden = juego.capas_orden;
+  if (Array.isArray(orden) && orden.length === 4) return [...orden];
+  return ['fondo_pantalla', 'marco', 'grilla', 'cartel'];
+}
+
+function render(datos, saldoInicial) {
+  const { juego, simbolos, sonidos: sonidosData, efectos, premios, digitos, capasLibres } = datos;
+
+  const pos = conDefaults(juego);
+  const ordenCapas = ordenPorDefecto(juego);
+  const apuesta = Number(juego.min_bet) || 1000;
+  let saldo = Number(saldoInicial);
+  let girando = false;
+
+  const posPremio = {};
+  ['dos_iguales', 'tres_iguales', 'premio_mayor'].forEach((valor) => {
+    const fila = premios.find((f) => f.nivel_premio === valor);
+    posPremio[valor] = {
+      imagen_url: fila?.imagen_url || null,
+      x: fila?.x ?? 50, y: fila?.y ?? 50, ancho: fila?.ancho ?? 60, alto: fila?.alto ?? 30,
+      blur: fila?.blur ?? 0, oscurecer: fila?.oscurecer ?? 0,
+      imagen_x: fila?.imagen_x ?? 50, imagen_y: fila?.imagen_y ?? 50, imagen_tamano: fila?.imagen_tamano ?? 60,
+      monto_x: fila?.monto_x ?? 50, monto_y: fila?.monto_y ?? 50,
+      monto_alto: fila?.monto_alto ?? 44, monto_espaciado: fila?.monto_espaciado ?? 4,
+    };
+  });
+
+  const mapaDigitos = {};
+  digitos.forEach((d) => { if (d.imagen_url) mapaDigitos[d.caracter] = d.imagen_url; });
+
+  const cssEfectos = efectos.map((ef) => ef.css || '').join('\n');
+  const audios = {};
+  sonidosData.forEach((s) => { audios[s.tipo] = new Audio(s.archivo_url); });
+  if (audios.musica_fondo) { audios.musica_fondo.loop = true; audios.musica_fondo.volume = 0.5; }
+
+  const fondoBg = juego.fondo_url ? `center/cover url('${juego.fondo_url}')` : 'var(--surface-alt)';
+
+  raiz.innerHTML = `
+    <style>${cssEfectos}</style>
+    <div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px">
+      <div id="jg-marco-cap" style="width:min(420px, 94vw); height:min(860px, 92vh); background:var(--surface); border-radius:20px; padding:22px; position:relative; overflow:visible">
+        ${juego.fondo_pantalla_url ? `<img id="jg-fondo-pantalla" src="${juego.fondo_pantalla_url}" style="position:absolute; object-fit:fill" />` : ''}
+        ${juego.marco_url ? `<img id="jg-marco" src="${juego.marco_url}" style="position:absolute; object-fit:fill" />` : ''}
+
+        <div style="display:flex; align-items:center; gap:8px; position:relative; z-index:10">
+          <p style="flex:1; text-align:center; font-weight:600; margin:0; letter-spacing:.04em">${escapeHtml(juego.nombre).toUpperCase()}</p>
+        </div>
+
+        <div id="jg-grilla" style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px; border-radius:12px; padding:8px; position:absolute; overflow:hidden; aspect-ratio:1">
+          <div id="jg-grilla-fondo" style="position:absolute; inset:0; background:${fondoBg}; z-index:0"></div>
+          <div style="position:relative; overflow:hidden; z-index:1"><div class="jg-cinta" id="jg-cinta-0" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>
+          <div style="position:relative; overflow:hidden; z-index:1"><div class="jg-cinta" id="jg-cinta-1" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>
+          <div style="position:relative; overflow:hidden; z-index:1"><div class="jg-cinta" id="jg-cinta-2" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>
+          <div id="jg-efecto-premio" style="position:absolute; inset:0; pointer-events:none; opacity:0; z-index:2"></div>
+        </div>
+
+        ${juego.cartel_url ? `<img id="jg-cartel" src="${juego.cartel_url}" style="position:absolute; object-fit:fill" />` : ''}
+
+        <div id="jg-capas-libres" style="position:absolute; inset:0; z-index:8; pointer-events:none"></div>
+
+        <div id="jg-premio-popup" style="position:absolute; z-index:15; display:none; border-radius:12px; background:rgba(0,0,0,.55); transition:opacity .25s; opacity:0; transform:translate(-50%,-50%)">
+          <img id="jg-img-premio" style="position:absolute; z-index:0; display:none" />
+          <strong id="jg-premio-monto" style="position:absolute; z-index:1; font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5); white-space:nowrap"></strong>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:10px; position:absolute; left:22px; right:22px; bottom:22px; z-index:10">
+          <div style="flex:1">
+            <p class="hint" style="margin:0">Saldo</p>
+            <strong id="jg-saldo" style="font-size:18px">${saldo.toLocaleString('es-PY')}</strong>
+          </div>
+          <button class="primary" id="jg-girar" style="font-size:16px; padding:12px 22px">Girar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const ELEMENTO_CAPA = {
+    fondo_pantalla: raiz.querySelector('#jg-fondo-pantalla'),
+    marco: raiz.querySelector('#jg-marco'),
+    grilla: raiz.querySelector('#jg-grilla'),
+    cartel: raiz.querySelector('#jg-cartel'),
+  };
+  const grillaFondoEl = raiz.querySelector('#jg-grilla-fondo');
+  const premioPopupEl = raiz.querySelector('#jg-premio-popup');
+  const imgPremio = raiz.querySelector('#jg-img-premio');
+  const montoPremioEl = raiz.querySelector('#jg-premio-monto');
+  const capasLibresEl = raiz.querySelector('#jg-capas-libres');
+  const cintas = [0, 1, 2].map((i) => raiz.querySelector(`#jg-cinta-${i}`));
+  const efectoPremio = raiz.querySelector('#jg-efecto-premio');
+  const btnGirar = raiz.querySelector('#jg-girar');
+  const saldoEl = raiz.querySelector('#jg-saldo');
+
+  const filtroCss = (blur, oscurecer) => `blur(${blur}px) brightness(${1 - oscurecer / 100})`;
+
+  const aplicarOrden = () => {
+    ordenCapas.forEach((capa, i) => { if (ELEMENTO_CAPA[capa]) ELEMENTO_CAPA[capa].style.zIndex = i; });
+  };
+
+  const aplicarPosiciones = () => {
+    const posicionar = (el, x, y, ancho, alto) => {
+      if (!el) return;
+      Object.assign(el.style, {
+        left: x + '%', top: y + '%', width: ancho + '%',
+        ...(alto !== undefined ? { height: alto + '%' } : {}),
+        transform: 'translate(-50%,-50%)',
+      });
+    };
+    posicionar(ELEMENTO_CAPA.fondo_pantalla, pos.fondo_pantalla_x, pos.fondo_pantalla_y, pos.fondo_pantalla_ancho, pos.fondo_pantalla_alto);
+    posicionar(ELEMENTO_CAPA.marco, pos.marco_x, pos.marco_y, pos.marco_ancho, pos.marco_alto);
+    posicionar(ELEMENTO_CAPA.cartel, pos.cartel_x, pos.cartel_y, pos.cartel_ancho, pos.cartel_alto);
+    posicionar(ELEMENTO_CAPA.grilla, pos.grilla_x, pos.grilla_y, pos.grilla_tamano);
+  };
+
+  const aplicarFiltros = () => {
+    if (ELEMENTO_CAPA.fondo_pantalla) ELEMENTO_CAPA.fondo_pantalla.style.filter = filtroCss(pos.fondo_pantalla_blur, pos.fondo_pantalla_oscurecer);
+    if (ELEMENTO_CAPA.marco) ELEMENTO_CAPA.marco.style.filter = filtroCss(pos.marco_blur, pos.marco_oscurecer);
+    if (ELEMENTO_CAPA.cartel) ELEMENTO_CAPA.cartel.style.filter = filtroCss(pos.cartel_blur, pos.cartel_oscurecer);
+    grillaFondoEl.style.filter = filtroCss(pos.fondo_blur, pos.fondo_oscurecer);
+  };
+
+  const aplicarCapasLibres = () => {
+    capasLibresEl.innerHTML = capasLibres.map((c) => c.imagen_url ? `
+      <img src="${c.imagen_url}" style="position:absolute; left:${c.x}%; top:${c.y}%; width:${c.tamano}%; height:auto; transform:translate(-50%,-50%) rotate(${c.angulo}deg); filter:${filtroCss(c.blur, c.oscurecer)}" />
+    ` : '').join('');
+  };
+
+  let montoDemoTexto = null;
+  const aplicarPosicionPremio = (nivel) => {
+    const p = posPremio[nivel];
+    premioPopupEl.style.left = p.x + '%';
+    premioPopupEl.style.top = p.y + '%';
+    premioPopupEl.style.width = p.ancho + '%';
+    premioPopupEl.style.height = p.alto + '%';
+    if (p.imagen_url) {
+      imgPremio.src = p.imagen_url;
+      imgPremio.style.display = 'block';
+      imgPremio.style.filter = filtroCss(p.blur, p.oscurecer);
+    } else {
+      imgPremio.style.display = 'none';
+    }
+    Object.assign(imgPremio.style, {
+      left: p.imagen_x + '%', top: p.imagen_y + '%', width: p.imagen_tamano + '%', height: 'auto',
+      transform: 'translate(-50%,-50%)',
+    });
+    Object.assign(montoPremioEl.style, {
+      left: p.monto_x + '%', top: p.monto_y + '%', transform: 'translate(-50%,-50%)',
+    });
+    if (montoDemoTexto !== null) pintarMonto(montoPremioEl, montoDemoTexto, p.monto_alto, p.monto_espaciado);
+  };
+
+  const pintarMonto = (elemento, texto, alto, espaciado) => {
+    elemento.style.display = 'flex';
+    elemento.style.alignItems = 'flex-end';
+    elemento.style.flexWrap = 'nowrap';
+    elemento.style.gap = espaciado + 'px';
+    elemento.innerHTML = [...texto].map((c) => {
+      const url = mapaDigitos[c];
+      if (url) return `<img src="${url}" style="height:${alto}px; width:auto; display:block" />`;
+      return `<span style="font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5)">${escapeHtml(c)}</span>`;
+    }).join('');
+  };
+
+  let timerPremio = null;
+  function mostrarPremio(monto, nivel) {
+    clearTimeout(timerPremio);
+    montoDemoTexto = '+' + monto.toLocaleString('es-PY');
+    aplicarPosicionPremio(nivel);
+    premioPopupEl.style.display = 'flex';
+    void premioPopupEl.offsetWidth;
+    premioPopupEl.style.opacity = '1';
+    timerPremio = setTimeout(ocultarPremio, 2500);
+  }
+  function ocultarPremio() {
+    premioPopupEl.style.opacity = '0';
+    setTimeout(() => { premioPopupEl.style.display = 'none'; }, 250);
+  }
+
+  aplicarPosiciones();
+  aplicarOrden();
+  aplicarFiltros();
+  aplicarCapasLibres();
+
+  // ---------------- Animación de rodillos (solo muestra, nunca decide) ----------------
+  const RELLENO = 18;
+  const DURACION_COLUMNA = [1400, 1800, 2200];
+
+  function elegirSimboloFiller(total) {
+    let r = Math.random() * total;
+    for (const s of simbolos) { r -= s.peso; if (r <= 0) return s; }
+    return simbolos[simbolos.length - 1];
+  }
+
+  function celdaHtml(s) {
+    if (s.icono_url) return `<img src="${s.icono_url}" style="width:60%; height:60%; object-fit:contain" />`;
+    return `<span style="font-size:11px; color:#8fae9a">${escapeHtml(s.nombre)}</span>`;
+  }
+
+  function crearCeldaCinta(simbolo, tamano) {
+    const div = document.createElement('div');
+    div.style.cssText = `width:${tamano}px; height:${tamano}px; display:flex; align-items:center; justify-content:center; flex-shrink:0`;
+    div.innerHTML = celdaHtml(simbolo);
+    return div;
+  }
+
+  function armarCinta(col, valoresFinales, total) {
+    const cinta = cintas[col];
+    cinta.innerHTML = '';
+    cinta.style.transition = 'none';
+    cinta.style.transform = 'translateY(0px)';
+    const tamanoCelda = cinta.parentElement.clientWidth;
+    for (let i = 0; i < RELLENO; i++) cinta.appendChild(crearCeldaCinta(elegirSimboloFiller(total), tamanoCelda));
+    valoresFinales.forEach((s) => cinta.appendChild(crearCeldaCinta(s, tamanoCelda)));
+    return tamanoCelda;
+  }
+
+  btnGirar.addEventListener('click', async () => {
+    if (girando) return;
+    if (saldo < apuesta) { alert('No te alcanza el saldo para esta apuesta.'); return; }
+
+    girando = true;
+    btnGirar.disabled = true;
+    ocultarPremio();
+
+    if (audios.musica_fondo && audios.musica_fondo.paused) audios.musica_fondo.play().catch(() => {});
+    if (audios.giro) { audios.giro.currentTime = 0; audios.giro.play().catch(() => {}); }
+
+    let resultado;
+    try {
+      resultado = await fetchJson('/api/jugar-girar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, slug, apuesta, clientId: crypto.randomUUID() }),
+      });
+    } catch (err) {
+      alert(err.message || 'No se pudo resolver el giro. Probá de nuevo.');
+      girando = false;
+      btnGirar.disabled = false;
+      return;
+    }
+
+    const { grilla, premio, nivel, saldo: saldoNuevo } = resultado;
+    const total = simbolos.reduce((a, s) => a + s.peso, 0) || 1;
+    const tamanoCelda = [0, 1, 2].map((col) => armarCinta(col, grilla[col], total));
+
+    void cintas[0].offsetWidth;
+
+    await Promise.all(cintas.map((cinta, col) => new Promise((resolve) => {
+      cinta.style.transition = `transform ${DURACION_COLUMNA[col]}ms cubic-bezier(0.15, 0.85, 0.3, 1)`;
+      cinta.style.transform = `translateY(-${RELLENO * tamanoCelda[col]}px)`;
+      setTimeout(resolve, DURACION_COLUMNA[col]);
+    })));
+
+    saldo = Number(saldoNuevo);
+    saldoEl.textContent = saldo.toLocaleString('es-PY');
+
+    if (premio > 0) {
+      mostrarPremio(premio, nivel);
+      cintas.forEach((cinta) => {
+        const celdaGanadora = cinta.children[RELLENO + 1];
+        if (celdaGanadora) celdaGanadora.classList.add('celda-ganadora');
+      });
+      const ef = efectos.find((e) => e.tipo === 'premio' && e.nivel_premio === nivel);
+      if (ef) {
+        efectoPremio.className = 'efecto-premio';
+        efectoPremio.style.animation = 'none';
+        void efectoPremio.offsetWidth;
+        efectoPremio.style.cssText = `position:absolute; inset:0; pointer-events:none; ${ef.posicion === 'linea' ? 'top:33%; height:33%;' : ''}`;
+        efectoPremio.style.animation = '';
+      }
+      const sonidoPremio = nivel === 'premio_mayor' ? audios.premio_grande : audios.premio_chico;
+      if (sonidoPremio) { sonidoPremio.currentTime = 0; sonidoPremio.play().catch(() => {}); }
+    }
+
+    girando = false;
+    btnGirar.disabled = false;
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str ?? '';
+  return div.innerHTML;
+}
