@@ -48,8 +48,24 @@ function mostrarError(msg) {
 
 async function fetchJson(url, opciones) {
   const res = await fetch(url, opciones);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Error de red');
+
+  let data = {};
+
+  try {
+    data = await res.json();
+  } catch {
+    data = {};
+  }
+
+  if (!res.ok) {
+    const detalle =
+      data?.error ||
+      data?.message ||
+      `El servidor respondió con HTTP ${res.status}`;
+
+    throw new Error(`Error ${res.status}: ${detalle}`);
+  }
+
   return data;
 }
 
