@@ -74,7 +74,11 @@ function render(datos, saldoInicial) {
 
   const pos = conDefaults(juego);
   const ordenCapas = ordenPorDefecto(juego);
-  const apuesta = Number(juego.min_bet) || 1000;
+  const pasoApuesta = Number(juego.paso_apuesta) || 500;
+  const apuestaMin = Number(juego.min_bet) || 1000;
+  const apuestaMax = Number(juego.max_bet) || 100000;
+  let apuesta = apuestaMin;
+  let velocidad = 1;
   let saldo = Number(saldoInicial);
   let girando = false;
 
@@ -129,13 +133,26 @@ function render(datos, saldoInicial) {
           <strong id="jg-premio-monto" style="position:absolute; z-index:1; font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5); white-space:nowrap"></strong>
         </div>
 
-        <div style="display:flex; align-items:center; gap:10px; position:absolute; left:22px; right:22px; bottom:22px; z-index:10">
+        <div style="display:flex; align-items:flex-end; gap:10px; position:absolute; left:22px; right:22px; bottom:22px; z-index:10">
           <div style="flex:1">
             <p class="hint" style="margin:0">Saldo</p>
             <strong id="jg-saldo" style="font-size:18px">${saldo.toLocaleString('es-PY')}</strong>
           </div>
-          <button class="primary" id="jg-girar" style="font-size:16px; padding:12px 22px">Girar</button>
+          <div style="display:flex; align-items:center; gap:6px">
+            <button id="jg-apuesta-menos" aria-label="Bajar apuesta" style="width:28px; height:28px; padding:0">−</button>
+            <div style="text-align:center; min-width:66px">
+              <p class="hint" style="margin:0">Apuesta</p>
+              <strong id="jg-apuesta" style="font-size:15px"></strong>
+            </div>
+            <button id="jg-apuesta-mas" aria-label="Subir apuesta" style="width:28px; height:28px; padding:0">+</button>
+          </div>
+          <div id="jg-turbo" style="display:flex; gap:3px"></div>
         </div>
+
+        <button id="jg-girar" style="position:absolute; z-index:11; padding:0; display:flex; align-items:center; justify-content:center; border-radius:50%; overflow:hidden">
+          <span id="jg-girar-texto" style="font-size:14px">Girar</span>
+          <img id="jg-girar-img" style="display:none; object-fit:contain" />
+        </button>
       </div>
     </div>
   `;
@@ -155,6 +172,50 @@ function render(datos, saldoInicial) {
   const efectoPremio = raiz.querySelector('#jg-efecto-premio');
   const btnGirar = raiz.querySelector('#jg-girar');
   const saldoEl = raiz.querySelector('#jg-saldo');
+  const girarImgEl = raiz.querySelector('#jg-girar-img');
+  const girarTextoEl = raiz.querySelector('#jg-girar-texto');
+
+  const tamBoton = Number(juego.girar_tamano) || 64;
+  Object.assign(btnGirar.style, {
+    left: (juego.girar_x ?? 50) + '%', top: (juego.girar_y ?? 90) + '%',
+    transform: 'translate(-50%,-50%)', width: tamBoton + 'px', height: tamBoton + 'px',
+    background: juego.girar_sin_fondo ? 'transparent' : '',
+    border: juego.girar_sin_fondo ? 'none' : '',
+  });
+  if (juego.girar_imagen_url) {
+    const tamImg = tamBoton * (Number(juego.girar_imagen_tamano) || 70) / 100;
+    girarImgEl.src = juego.girar_imagen_url;
+    girarImgEl.style.display = 'block';
+    girarImgEl.style.width = tamImg + 'px';
+    girarImgEl.style.height = tamImg + 'px';
+    girarTextoEl.style.display = 'none';
+  }
+
+  const apuestaEl = raiz.querySelector('#jg-apuesta');
+  const pintarApuesta = () => { apuestaEl.textContent = apuesta.toLocaleString('es-PY'); };
+  pintarApuesta();
+
+  raiz.querySelector('#jg-apuesta-mas').addEventListener('click', () => {
+    if (girando) return;
+    apuesta = Math.min(apuestaMax, apuesta + pasoApuesta);
+    pintarApuesta();
+  });
+  raiz.querySelector('#jg-apuesta-menos').addEventListener('click', () => {
+    if (girando) return;
+    apuesta = Math.max(apuestaMin, apuesta - pasoApuesta);
+    pintarApuesta();
+  });
+
+  const turboEl = raiz.querySelector('#jg-turbo');
+  const pintarTurbo = () => {
+    turboEl.innerHTML = [1, 2, 3].map((v) => `
+      <button data-v="${v}" style="padding:2px 7px; font-size:11px; ${v === velocidad ? 'border-color:var(--accent); color:var(--accent)' : ''}">x${v}</button>
+    `).join('');
+    turboEl.querySelectorAll('button').forEach((b) => {
+      b.addEventListener('click', () => { velocidad = Number(b.dataset.v); pintarTurbo(); });
+    });
+  };
+  pintarTurbo();
 
   const filtroCss = (blur, oscurecer) => `blur(${blur}px) brightness(${1 - oscurecer / 100})`;
 
@@ -268,6 +329,34 @@ function render(datos, saldoInicial) {
     return div;
   }
 
+  // Al abrir, ya se ven símbolos en vez de rodillos vacíos. Es solo
+  // decorado: se descarta cualquier combinación que pagaría, para no
+  // mostrar un premio que el jugador no ganó. El resultado de verdad
+  // siempre viene del servidor, esto nunca lo toca.
+  function lineaPagaria(linea) {
+    const reales = linea.filter((s) => s.nombre !== 'wild');
+    const cand = reales.length ? reales[0] : linea[0];
+    if (linea.every((s) => s === cand || s.nombre === 'wild')) return true;
+    return linea[0] === linea[1] || linea[0].nombre === 'wild' || linea[1].nombre === 'wild';
+  }
+
+  function pintarGrillaInicial() {
+    const total = simbolos.reduce((a, s) => a + s.peso, 0) || 1;
+    let grilla;
+    for (let intento = 0; intento < 40; intento++) {
+      grilla = [0, 1, 2].map(() => [0, 1, 2].map(() => elegirSimboloFiller(total)));
+      if (!lineaPagaria([grilla[0][1], grilla[1][1], grilla[2][1]])) break;
+    }
+    cintas.forEach((cinta, col) => {
+      cinta.innerHTML = '';
+      cinta.style.transition = 'none';
+      cinta.style.transform = 'translateY(0px)';
+      const tamanoCelda = cinta.parentElement.clientWidth;
+      grilla[col].forEach((s) => cinta.appendChild(crearCeldaCinta(s, tamanoCelda)));
+    });
+  }
+  requestAnimationFrame(pintarGrillaInicial);
+
   function armarCinta(col, valoresFinales, total) {
     const cinta = cintas[col];
     cinta.innerHTML = '';
@@ -311,9 +400,10 @@ function render(datos, saldoInicial) {
     void cintas[0].offsetWidth;
 
     await Promise.all(cintas.map((cinta, col) => new Promise((resolve) => {
-      cinta.style.transition = `transform ${DURACION_COLUMNA[col]}ms cubic-bezier(0.15, 0.85, 0.3, 1)`;
+      const ms = Math.round(DURACION_COLUMNA[col] / velocidad);
+      cinta.style.transition = `transform ${ms}ms cubic-bezier(0.15, 0.85, 0.3, 1)`;
       cinta.style.transform = `translateY(-${RELLENO * tamanoCelda[col]}px)`;
-      setTimeout(resolve, DURACION_COLUMNA[col]);
+      setTimeout(resolve, ms);
     })));
 
     saldo = Number(saldoNuevo);
