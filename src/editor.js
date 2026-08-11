@@ -35,6 +35,7 @@ export function renderEditor(el, juego, onCambio) {
           <option value="en_prueba" ${juego.estado === 'en_prueba' ? 'selected' : ''}>En prueba</option>
           <option value="listo" ${juego.estado === 'listo' ? 'selected' : ''}>Listo</option>
         </select>
+        <button id="ed-publicar" style="white-space:nowrap; ${juego.publicado ? 'color:var(--accent); border-color:var(--accent)' : ''}">${juego.publicado ? '✓ Publicado' : 'Publicar'}</button>
         <button class="primary" id="ed-preview">▶ Vista previa</button>
       </div>
 
@@ -402,6 +403,21 @@ export function renderEditor(el, juego, onCambio) {
 
   el.querySelector('#ed-estado').addEventListener('change', async (e) => {
     await supabase.from('juegos').update({ estado: e.target.value }).eq('id', juego.id);
+    onCambio();
+  });
+
+  el.querySelector('#ed-publicar').addEventListener('click', async () => {
+    if (!juego.publicado) {
+      if (juego.estado !== 'listo') {
+        alert('Marcá el juego como Listo antes de publicarlo.');
+        return;
+      }
+      // Subir version es lo que le avisa a Win777, la próxima vez
+      // que sincronice catálogo, que hay algo nuevo para traer.
+      await supabase.from('juegos').update({ publicado: true, version: (juego.version || 1) + 1 }).eq('id', juego.id);
+    } else {
+      await supabase.from('juegos').update({ publicado: false }).eq('id', juego.id);
+    }
     onCambio();
   });
 

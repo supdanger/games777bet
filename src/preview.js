@@ -170,12 +170,13 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // el orden elegido — acá no van fijos.
   overlay.innerHTML = `
     <style>${cssEfectos}</style>
-    <div style="width:min(420px, 94vw); height:min(860px, 92vh); display:flex; flex-direction:column">
-      <div style="display:flex; justify-content:space-between; margin-bottom:8px; gap:8px">
+    <div style="display:flex; flex-direction:column; align-items:center">
+      <div style="display:flex; justify-content:space-between; margin-bottom:8px; gap:8px; width:420px">
         <button id="pv-ajustar">⚙ Ajustar posición</button>
         <button id="pv-cerrar">✕ Cerrar prueba</button>
       </div>
-      <div id="pv-marco-cap" style="flex:1; background:var(--surface); border:1px dashed var(--border); border-radius:20px; padding:22px; position:relative; overflow:visible; min-height:0">
+      <div id="pv-escala-wrap" style="width:420px; height:860px; flex-shrink:0">
+      <div id="pv-marco-cap" style="width:420px; height:860px; transform-origin:top center; background:var(--surface); border:1px dashed var(--border); border-radius:20px; padding:22px; position:relative; overflow:visible">
         ${juego.fondo_pantalla_url ? `<img id="pv-img-fondo-pantalla" src="${juego.fondo_pantalla_url}" style="position:absolute; object-fit:fill" />` : ''}
         ${juego.marco_url ? `<img id="pv-img-marco" src="${juego.marco_url}" style="position:absolute; object-fit:fill" />` : ''}
 
@@ -202,13 +203,27 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
           <strong id="pv-premio-monto" style="position:absolute; z-index:1; font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5); white-space:nowrap"></strong>
         </div>
 
-        <div style="display:flex; align-items:center; gap:10px; position:absolute; left:22px; right:22px; bottom:22px; z-index:10">
+        <div style="display:flex; align-items:flex-end; gap:10px; position:absolute; left:22px; right:22px; bottom:22px; z-index:10">
           <div style="flex:1">
             <p class="hint" style="margin:0">Saldo de prueba</p>
             <strong id="pv-saldo" style="font-size:18px">10.000</strong>
           </div>
-          <button class="primary" id="pv-girar" style="font-size:16px; padding:12px 22px">Girar</button>
+          <div style="display:flex; align-items:center; gap:6px">
+            <button id="pv-apuesta-menos" aria-label="Bajar apuesta" style="width:28px; height:28px; padding:0">−</button>
+            <div style="text-align:center; min-width:66px">
+              <p class="hint" style="margin:0">Apuesta</p>
+              <strong id="pv-apuesta" style="font-size:15px"></strong>
+            </div>
+            <button id="pv-apuesta-mas" aria-label="Subir apuesta" style="width:28px; height:28px; padding:0">+</button>
+          </div>
+          <div id="pv-turbo" style="display:flex; gap:3px"></div>
         </div>
+
+        <button id="pv-girar" style="position:absolute; z-index:11; padding:0; display:flex; align-items:center; justify-content:center; border-radius:50%; overflow:hidden">
+          <span id="pv-girar-texto" style="font-size:14px">Girar</span>
+          <img id="pv-girar-img" style="display:none; object-fit:contain" />
+        </button>
+      </div>
       </div>
     </div>
 
@@ -216,6 +231,21 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   `;
 
   document.body.appendChild(overlay);
+
+  // Misma escala que del lado del jugador: la pantalla mide 420x860
+  // fijo por dentro y se achica entera si no entra. Así lo que ajustás
+  // acá es exactamente lo que se ve en el celular, sin sorpresas.
+  const capElPv = overlay.querySelector('#pv-marco-cap');
+  const wrapPv = overlay.querySelector('#pv-escala-wrap');
+  const ajustarEscalaPv = () => {
+    const escala = Math.min(1, (window.innerHeight - 90) / 860);
+    capElPv.style.transform = `scale(${escala})`;
+    wrapPv.style.height = (860 * escala) + 'px';
+    wrapPv.style.width = (420 * escala) + 'px';
+    capElPv.style.marginLeft = ((420 * escala - 420) / 2) + 'px';
+  };
+  ajustarEscalaPv();
+  window.addEventListener('resize', ajustarEscalaPv);
 
   // ---------------- Posicionamiento y orden de las cuatro capas ----------------
   const ELEMENTO_CAPA = {
@@ -351,6 +381,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
         <button data-capa="grilla" class="pv-tab">Grilla</button>
         <button data-capa="cartel" class="pv-tab">Cartel</button>
         <button data-capa="libres" class="pv-tab">Libres</button>
+        <button data-capa="girar" class="pv-tab">Girar</button>
         <button data-capa="premio" class="pv-tab">Premio</button>
       </div>
 
@@ -395,6 +426,13 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
       panel.querySelector('#pv-orden-wrap').style.display = 'none';
       panel.querySelector('#pv-guardar').style.display = 'none';
       pintarPanelLibres(slidersEl);
+      return;
+    }
+
+    if (capaActual === 'girar') {
+      panel.querySelector('#pv-orden-wrap').style.display = 'none';
+      panel.querySelector('#pv-guardar').style.display = 'none';
+      pintarPanelGirar(slidersEl);
       return;
     }
 
@@ -471,10 +509,76 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // ---------------- Juego ----------------
   let saldo = 10000;
   let girando = false;
-  const apuesta = Number(juego.min_bet) || 1000;
+  const pasoApuesta = Number(juego.paso_apuesta) || 500;
+  const apuestaMin = Number(juego.min_bet) || 1000;
+  const apuestaMax = Number(juego.max_bet) || 100000;
+  let apuesta = apuestaMin;
+  let velocidad = 1;
   const cintas = [0, 1, 2].map((i) => overlay.querySelector(`#pv-cinta-${i}`));
   const efectoPremio = overlay.querySelector('#pv-efecto-premio');
   const btnGirar = overlay.querySelector('#pv-girar');
+  const girarImgEl = overlay.querySelector('#pv-girar-img');
+  const girarTextoEl = overlay.querySelector('#pv-girar-texto');
+
+  const posGirar = {
+    girar_x: juego.girar_x ?? 50, girar_y: juego.girar_y ?? 90,
+    girar_tamano: juego.girar_tamano ?? 64,
+    girar_imagen_tamano: juego.girar_imagen_tamano ?? 70,
+    girar_imagen_url: juego.girar_imagen_url || null,
+    girar_sin_fondo: juego.girar_sin_fondo ?? false,
+  };
+
+  // El botón es un círculo posicionable: la imagen va adentro con su
+  // propio tamaño (en % del botón) para poder calzarla sin deformar.
+  const aplicarGirar = () => {
+    const tam = posGirar.girar_tamano;
+    Object.assign(btnGirar.style, {
+      left: posGirar.girar_x + '%', top: posGirar.girar_y + '%',
+      transform: 'translate(-50%,-50%)',
+      width: tam + 'px', height: tam + 'px',
+      background: posGirar.girar_sin_fondo ? 'transparent' : '',
+      border: posGirar.girar_sin_fondo ? 'none' : '',
+    });
+    if (posGirar.girar_imagen_url) {
+      girarImgEl.src = posGirar.girar_imagen_url;
+      girarImgEl.style.display = 'block';
+      girarImgEl.style.width = (tam * posGirar.girar_imagen_tamano / 100) + 'px';
+      girarImgEl.style.height = (tam * posGirar.girar_imagen_tamano / 100) + 'px';
+      girarTextoEl.style.display = 'none';
+    } else {
+      girarImgEl.style.display = 'none';
+      girarTextoEl.style.display = 'block';
+    }
+  };
+  aplicarGirar();
+
+  const apuestaEl = overlay.querySelector('#pv-apuesta');
+  const pintarApuesta = () => { apuestaEl.textContent = apuesta.toLocaleString('es-PY'); };
+  pintarApuesta();
+
+  overlay.querySelector('#pv-apuesta-mas').addEventListener('click', () => {
+    if (girando) return;
+    apuesta = Math.min(apuestaMax, apuesta + pasoApuesta);
+    pintarApuesta();
+  });
+  overlay.querySelector('#pv-apuesta-menos').addEventListener('click', () => {
+    if (girando) return;
+    apuesta = Math.max(apuestaMin, apuesta - pasoApuesta);
+    pintarApuesta();
+  });
+
+  // La velocidad solo acorta la animación: el resultado ya está
+  // decidido antes de que el primer rodillo se mueva.
+  const turboEl = overlay.querySelector('#pv-turbo');
+  const pintarTurbo = () => {
+    turboEl.innerHTML = [1, 2, 3].map((v) => `
+      <button data-v="${v}" style="padding:2px 7px; font-size:11px; ${v === velocidad ? 'border-color:var(--accent); color:var(--accent)' : ''}">x${v}</button>
+    `).join('');
+    turboEl.querySelectorAll('button').forEach((b) => {
+      b.addEventListener('click', () => { velocidad = Number(b.dataset.v); pintarTurbo(); });
+    });
+  };
+  pintarTurbo();
 
   const cerrar = () => { Object.values(audios).forEach((a) => a.pause()); overlay.remove(); };
   overlay.querySelector('#pv-cerrar').addEventListener('click', cerrar);
@@ -607,8 +711,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     });
   }
 
-  async function subirArchivoLibre(archivo, id) {
-    const ruta = `libres/${juego.id}/${id}-${Date.now()}-${archivo.name}`;
+  async function subirArchivoLibre(archivo, id) {    const ruta = `libres/${juego.id}/${id}-${Date.now()}-${archivo.name}`;
     const { error } = await supabase.storage.from('assets').upload(ruta, archivo, { upsert: true });
     if (error) { alert('No se pudo subir: ' + error.message); return null; }
     const { data } = supabase.storage.from('assets').getPublicUrl(ruta);
@@ -620,6 +723,89 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // "Agregar" y "Quitar" tocan la base al toque para no dejar
   // altas/bajas sueltas sin guardar; los ajustes de posición/tamaño/
   // ángulo se guardan con el botón, igual que el premio por nivel.
+  async function subirArchivoGirar(archivo) {
+    const ruta = `girar/${juego.id}/${Date.now()}-${archivo.name}`;
+    const { error } = await supabase.storage.from('assets').upload(ruta, archivo, { upsert: true });
+    if (error) { alert('No se pudo subir: ' + error.message); return null; }
+    const { data } = supabase.storage.from('assets').getPublicUrl(ruta);
+    return data.publicUrl;
+  }
+
+  // Sub-panel "Girar": posición y tamaño del botón, imagen opcional
+  // con su propio tamaño (para calzarla al botón sin deformarla), y
+  // el paso con el que suben/bajan los botones de apuesta.
+  function pintarPanelGirar(container) {
+    const sliderHtml = (campo, etiqueta, min, max, unidad, valor) => `
+      <label style="display:block; margin-bottom:8px; font-size:12px">${etiqueta} <span class="hint" id="pg-out-${campo}">${valor}${unidad}</span>
+        <input type="range" min="${min}" max="${max}" value="${valor}" data-campo="${campo}" />
+      </label>
+    `;
+
+    container.innerHTML = `
+      <label style="display:block; height:70px; border-radius:8px; border:1px dashed var(--border); background:var(--surface-alt); cursor:pointer; overflow:hidden; position:relative; margin-bottom:10px">
+        ${posGirar.girar_imagen_url ? `<img src="${posGirar.girar_imagen_url}" style="width:100%; height:100%; object-fit:contain" />` : '<span class="hint" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px">Subir imagen del botón</span>'}
+        <input type="file" accept="image/*" hidden id="pg-subir" />
+      </label>
+      ${posGirar.girar_imagen_url ? '<button id="pg-quitar-img" style="width:100%; margin-bottom:10px; font-size:12px">Quitar imagen</button>' : ''}
+      ${sliderHtml('girar_x', 'Posición X', 0, 100, '%', posGirar.girar_x)}
+      ${sliderHtml('girar_y', 'Posición Y', 0, 100, '%', posGirar.girar_y)}
+      ${sliderHtml('girar_tamano', 'Tamaño del botón', 36, 140, 'px', posGirar.girar_tamano)}
+      ${sliderHtml('girar_imagen_tamano', 'Tamaño de la imagen', 20, 140, '%', posGirar.girar_imagen_tamano)}
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin:10px 0">
+        <input type="checkbox" id="pg-sinfondo" ${posGirar.girar_sin_fondo ? 'checked' : ''} /> Ocultar el fondo del botón
+      </label>
+      <p style="font-size:12px; color:var(--text-dim); margin:10px 0 8px">Apuesta</p>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Sube y baja de a
+        <input type="number" id="pg-paso" value="${pasoApuesta}" min="1" style="width:100%" />
+      </label>
+      <button class="primary" id="pg-guardar" style="width:100%; margin-top:6px">Guardar</button>
+      <p id="pg-msg" class="hint"></p>
+    `;
+
+    container.querySelectorAll('input[type="range"]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const campo = input.dataset.campo;
+        posGirar[campo] = Number(input.value);
+        const unidad = campo === 'girar_tamano' ? 'px' : '%';
+        container.querySelector(`#pg-out-${campo}`).textContent = input.value + unidad;
+        aplicarGirar();
+      });
+    });
+
+    container.querySelector('#pg-sinfondo').addEventListener('change', (e) => {
+      posGirar.girar_sin_fondo = e.target.checked;
+      aplicarGirar();
+    });
+
+    container.querySelector('#pg-subir').addEventListener('change', async (e) => {
+      const archivo = e.target.files?.[0];
+      if (!archivo) return;
+      const url = await subirArchivoGirar(archivo);
+      if (url) { posGirar.girar_imagen_url = url; aplicarGirar(); pintarPanelGirar(container); }
+    });
+
+    container.querySelector('#pg-quitar-img')?.addEventListener('click', () => {
+      posGirar.girar_imagen_url = null;
+      aplicarGirar();
+      pintarPanelGirar(container);
+    });
+
+    container.querySelector('#pg-guardar').addEventListener('click', async () => {
+      const msgEl = container.querySelector('#pg-msg');
+      msgEl.textContent = 'Guardando...';
+      const paso = Number(container.querySelector('#pg-paso').value) || 500;
+      const { error } = await supabase.from('juegos').update({
+        girar_x: posGirar.girar_x, girar_y: posGirar.girar_y,
+        girar_tamano: posGirar.girar_tamano,
+        girar_imagen_url: posGirar.girar_imagen_url,
+        girar_imagen_tamano: posGirar.girar_imagen_tamano,
+        girar_sin_fondo: posGirar.girar_sin_fondo,
+        paso_apuesta: paso,
+      }).eq('id', juego.id);
+      msgEl.textContent = error ? error.message : 'Guardado ✓ (el paso nuevo se aplica al reabrir)';
+    });
+  }
+
   function pintarPanelLibres(container) {
     container.innerHTML = `
       <div style="display:flex; gap:4px; margin-bottom:10px; flex-wrap:wrap; align-items:center">
@@ -756,6 +942,28 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     return div;
   }
 
+  // Al abrir, la pantalla ya muestra símbolos en vez de estar vacía —
+  // pero se descarta cualquier tirada que pague, para no simular un
+  // premio que el jugador no ganó. Se pinta directo, sin animar.
+  function pintarGrillaInicial() {
+    const total = simbolos.reduce((a, s) => a + s.peso, 0) || 1;
+    let grilla;
+    for (let intento = 0; intento < 40; intento++) {
+      grilla = girar(simbolos);
+      if (!grilla.premio) break;
+    }
+    cintas.forEach((cinta, col) => {
+      cinta.innerHTML = '';
+      cinta.style.transition = 'none';
+      cinta.style.transform = 'translateY(0px)';
+      const tamanoCelda = cinta.parentElement.clientWidth;
+      grilla.grilla[col].forEach((s) => cinta.appendChild(crearCeldaCinta(s, tamanoCelda)));
+    });
+  }
+  // Esperar al layout: antes de que el navegador mida los rodillos,
+  // clientWidth es 0 y las celdas saldrían de tamaño cero.
+  requestAnimationFrame(pintarGrillaInicial);
+
   btnGirar.addEventListener('click', async () => {
     if (girando) return;
     if (saldo < apuesta) { alert('Sin saldo de prueba. Cerrá y volvé a abrir.'); return; }
@@ -781,9 +989,10 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     void cintas[0].offsetWidth;
 
     await Promise.all(cintas.map((cinta, col) => new Promise((resolve) => {
-      cinta.style.transition = `transform ${DURACION_COLUMNA[col]}ms cubic-bezier(0.15, 0.85, 0.3, 1)`;
+      const ms = Math.round(DURACION_COLUMNA[col] / velocidad);
+      cinta.style.transition = `transform ${ms}ms cubic-bezier(0.15, 0.85, 0.3, 1)`;
       cinta.style.transform = `translateY(-${RELLENO * tamanoCelda[col]}px)`;
-      setTimeout(resolve, DURACION_COLUMNA[col]);
+      setTimeout(resolve, ms);
     })));
 
     const ganancia = premio * apuesta;
