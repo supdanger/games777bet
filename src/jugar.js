@@ -142,6 +142,10 @@ function render(datos, saldoInicial) {
         pointer-events: none;
       }
       #app button, #app button * { pointer-events: auto; }
+      @keyframes jg-rodar {
+        from { transform: translateY(0); }
+        to   { transform: translateY(var(--jg-recorrido, -300px)); }
+      }
       ${cssEfectos}
     </style>
     <div id="jg-escenario" style="min-height:100vh; display:flex; align-items:center; justify-content:center; overflow:hidden">
@@ -448,41 +452,59 @@ function render(datos, saldoInicial) {
       body: JSON.stringify({ token, slug, apuesta, clientId: crypto.randomUUID() }),
     });
 
-    // 2) Los rodillos arrancan en el mismo instante del toque, girando
-    // en falso sobre relleno. Esto es puro decorado: no sabe ni puede
-    // saber el resultado, que lo decide el servidor.
+    // 2) Los rodillos arrancan en el mismo instante del toque y giran
+    // SIN PARAR hasta que llegue el resultado. Antes esta fase duraba
+    // 700ms fijos y terminaba: los rodillos quedaban quietos sobre
+    // relleno mientras se esperaba al servidor, y si en esa parada
+    // casual caían tres iguales, parecía un premio que nunca existió.
+    // Ahora nunca hay un frame en reposo antes del resultado real: la
+    // única vez que los rodillos frenan es sobre lo que dijo el
+    // servidor.
     const tamanoCelda = [0, 1, 2].map((col) => armarCintaInicial(col, total));
     void cintas[0].offsetWidth;
     const arranque = Date.now();
+    const VUELTA_MS = Math.round(700 / velocidad);
     cintas.forEach((cinta, col) => {
-      cinta.style.transition = `transform ${Math.round(700 / velocidad)}ms linear`;
-      cinta.style.transform = `translateY(-${(RELLENO - 3) * tamanoCelda[col]}px)`;
+      cinta.style.transition = 'none';
+      cinta.style.transform = 'translateY(0px)';
+      cinta.style.animation = `jg-rodar ${VUELTA_MS}ms linear infinite`;
+      cinta.style.setProperty('--jg-recorrido', `-${(RELLENO - 3) * tamanoCelda[col]}px`);
     });
 
-    // 3) Llega el resultado. Si tardó menos que el giro en falso, se
-    // espera lo que falte para que no corte de golpe.
+    // 3) Llega el resultado.
     let resultado;
     try {
       resultado = await pedido;
     } catch (err) {
-      cintas.forEach((cinta) => { cinta.style.transition = 'none'; cinta.style.transform = 'translateY(0px)'; });
+      cintas.forEach((cinta) => {
+        cinta.style.animation = 'none';
+        cinta.style.transition = 'none';
+        cinta.style.transform = 'translateY(0px)';
+      });
       alert(err.message || 'No se pudo resolver el giro. Probá de nuevo.');
       girando = false;
       btnGirar.disabled = false;
       return;
     }
-    const restante = Math.round(700 / velocidad) - (Date.now() - arranque);
+    // Un mínimo de giro para que no parezca un corte seco cuando el
+    // servidor contesta muy rápido.
+    const restante = VUELTA_MS - (Date.now() - arranque);
     if (restante > 0) await new Promise((r) => setTimeout(r, restante));
 
     const { grilla, premio, nivel, saldo: saldoNuevo } = resultado;
 
-    // 4) Se enganchan los 3 definitivos al final de cada cinta y se
-    // hace el frenado en cascada hasta ellos.
+    // 4) Se corta el giro continuo y se arma la cinta final: relleno
+    // + los 3 definitivos. El salto al reiniciar la posición no se
+    // nota porque los rodillos vienen a toda velocidad.
     cintas.forEach((cinta, col) => {
+      cinta.style.animation = 'none';
+      cinta.style.transition = 'none';
+      cinta.style.transform = 'translateY(0px)';
+      cinta.innerHTML = '';
       for (let i = 0; i < RELLENO; i++) cinta.appendChild(crearCeldaCinta(elegirSimboloFiller(total), tamanoCelda[col]));
       grilla[col].forEach((s) => cinta.appendChild(crearCeldaCinta(s, tamanoCelda[col])));
     });
-    const OFFSET_FINAL = (RELLENO * 2) - 3;
+    const OFFSET_FINAL = RELLENO;
     void cintas[0].offsetWidth;
 
     await Promise.all(cintas.map((cinta, col) => new Promise((resolve) => {
