@@ -10,6 +10,7 @@
 import { supabase } from './supabase.js';
 import { girar, elegirSimbolo } from '../motor/clasico-3x3.js';
 import { ANCHO_ESC, ALTO_ESC, construirCadena, animarCadena } from './luces.js';
+import { mostrarTablaPagos } from './tabla-pagos.js';
 
 function celdaHtml(s) {
   if (s.icono_url) return `<img src="${s.icono_url}" style="width:60%; height:60%; object-fit:contain" />`;
@@ -179,7 +180,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
 
         <div style="display:flex; align-items:center; gap:8px; position:relative; z-index:10">
           <div style="width:28px"></div>
-          <p style="flex:1; text-align:center; font-weight:600; margin:0; letter-spacing:.04em">${escapeHtml(juego.nombre).toUpperCase()}</p>
+          <p id="pv-titulo-juego" style="flex:1; text-align:center; font-weight:600; margin:0; letter-spacing:.04em; ${(juego.mostrar_nombre ?? true) ? '' : 'visibility:hidden'}">${escapeHtml(juego.nombre).toUpperCase()}</p>
           <button id="pv-info" aria-label="Ver información del juego" style="width:28px; height:28px; padding:0; border-radius:50%; flex-shrink:0">ℹ</button>
         </div>
 
@@ -608,6 +609,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   };
 
   let modoApuesta = juego.modo_apuesta || 'mixto';
+  let mostrarNombre = juego.mostrar_nombre ?? true;
   // Sin fichas configuradas, se arman solas a partir del mínimo para
   // que la pantalla nunca quede sin opciones que tocar.
   const fichasPorDefecto = [1, 2, 5, 20, 50].map((m) => apuestaMin * m).filter((f) => f <= apuestaMax);
@@ -1005,6 +1007,9 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     `;
 
     container.innerHTML = `
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:12px">
+        <input type="checkbox" id="pc-nombre" ${mostrarNombre ? 'checked' : ''} /> Mostrar el nombre del juego arriba
+      </label>
       <p style="font-size:12px; color:var(--text-dim); margin:0 0 8px">Modo de apuesta</p>
       <select id="pc-modo" style="width:100%; margin-bottom:6px">
         <option value="fichas" ${modoApuesta === 'fichas' ? 'selected' : ''}>Solo fichas</option>
@@ -1092,6 +1097,12 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
       pintarTurbo();
     });
 
+    container.querySelector('#pc-nombre').addEventListener('change', (e) => {
+      mostrarNombre = e.target.checked;
+      const tituloEl = overlay.querySelector('#pv-titulo-juego');
+      if (tituloEl) tituloEl.style.visibility = mostrarNombre ? 'visible' : 'hidden';
+    });
+
     container.querySelector('#pc-modo').addEventListener('change', (e) => {
       modoApuesta = e.target.value;
       aplicarModo();
@@ -1153,6 +1164,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
         saldo_fondo_url: posGrupos.saldo_fondo_url,
         apuesta_fondo_url: posGrupos.apuesta_fondo_url,
         modo_apuesta: modoApuesta,
+        mostrar_nombre: mostrarNombre,
         fichas,
       }).eq('id', juego.id);
 
@@ -1676,71 +1688,6 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
  * partir de los datos que ya cargaste — no hay que configurar nada
  * aparte.
  */
-function mostrarTablaPagos(overlayJuego, simbolos, juego) {
-  const ordenados = [...simbolos].sort((a, b) => b.pago_tres - a.pago_tres);
-
-  const filasPagos = ordenados.map((s) => `
-    <div style="display:flex; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--border-soft, var(--border))">
-      <div style="width:36px; height:36px; border-radius:8px; background:var(--surface-alt); flex-shrink:0; display:flex; align-items:center; justify-content:center; overflow:hidden">
-        ${s.icono_url ? `<img src="${s.icono_url}" style="width:80%; height:80%; object-fit:contain" />` : `<span class="hint" style="font-size:10px">${escapeHtml(s.nombre.slice(0, 3))}</span>`}
-      </div>
-      <p style="flex:1; margin:0; font-size:13px">${escapeHtml(s.nombre)}</p>
-      <div style="text-align:right">
-        <p style="margin:0; font-size:13px"><span class="hint">x3</span> ${s.pago_tres}x</p>
-        ${s.pago_dos > 0 ? `<p style="margin:0; font-size:12px" class="hint">x2 ${s.pago_dos}x</p>` : ''}
-      </div>
-    </div>
-  `).join('');
-
-  const panelReglas = `
-    ${juego.descripcion ? `<p style="font-size:13px; margin:0 0 12px">${escapeHtml(juego.descripcion)}</p>` : ''}
-    <div style="background:var(--surface-alt); border-radius:8px; padding:10px 12px">
-      <p class="hint" style="margin:0 0 2px">Apuesta</p>
-      <p style="margin:0; font-size:13px">${Number(juego.min_bet).toLocaleString('es-PY')} - ${Number(juego.max_bet).toLocaleString('es-PY')}</p>
-    </div>
-  `;
-
-  const modal = document.createElement('div');
-  modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:200; display:flex; align-items:center; justify-content:center; padding:20px';
-  modal.innerHTML = `
-    <div class="card" style="max-width:340px; width:100%; max-height:80vh; overflow:auto">
-      <div style="display:flex; align-items:center; margin-bottom:10px">
-        <strong style="flex:1">Información del juego</strong>
-        <button id="tp-cerrar">✕</button>
-      </div>
-
-      <div style="display:flex; gap:6px; margin-bottom:14px">
-        <button id="tp-tab-pagos" class="tp-tab" style="flex:1">Tabla de pagos</button>
-        <button id="tp-tab-reglas" class="tp-tab" style="flex:1">Reglas</button>
-      </div>
-
-      <div id="tp-panel-pagos">
-        <p class="hint" style="margin:0 0 10px">Tres iguales en la línea del medio pagan x3. Dos iguales, x2.</p>
-        ${filasPagos}
-      </div>
-      <div id="tp-panel-reglas" style="display:none">${panelReglas}</div>
-    </div>
-  `;
-
-  const marcarActivo = (activaId) => {
-    modal.querySelectorAll('.tp-tab').forEach((btn) => {
-      const activo = btn.id === activaId;
-      btn.style.borderColor = activo ? 'var(--accent)' : 'var(--border)';
-      btn.style.color = activo ? 'var(--accent)' : 'var(--text)';
-    });
-    modal.querySelector('#tp-panel-pagos').style.display = activaId === 'tp-tab-pagos' ? 'block' : 'none';
-    modal.querySelector('#tp-panel-reglas').style.display = activaId === 'tp-tab-reglas' ? 'block' : 'none';
-  };
-
-  modal.querySelector('#tp-tab-pagos').addEventListener('click', () => marcarActivo('tp-tab-pagos'));
-  modal.querySelector('#tp-tab-reglas').addEventListener('click', () => marcarActivo('tp-tab-reglas'));
-  marcarActivo('tp-tab-pagos');
-
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
-  modal.querySelector('#tp-cerrar').addEventListener('click', () => modal.remove());
-  overlayJuego.appendChild(modal);
-}
-
 function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',

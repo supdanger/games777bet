@@ -11,6 +11,7 @@
 
 import './styles.css';
 import { ANCHO_ESC, ALTO_ESC, construirCadena, animarCadena } from './luces.js';
+import { mostrarTablaPagos } from './tabla-pagos.js';
 
 const params = new URLSearchParams(location.search);
 const slug = params.get('slug');
@@ -247,9 +248,10 @@ function render(datos, saldoInicial) {
         ${juego.fondo_pantalla_url ? `<img id="jg-fondo-pantalla" src="${juego.fondo_pantalla_url}" style="position:absolute; object-fit:fill" />` : ''}
         ${juego.marco_url ? `<img id="jg-marco" src="${juego.marco_url}" style="position:absolute; object-fit:fill" />` : ''}
 
+        ${(juego.mostrar_nombre ?? true) ? `
         <div style="display:flex; align-items:center; gap:8px; position:relative; z-index:10">
           <p style="flex:1; text-align:center; font-weight:600; margin:0; letter-spacing:.04em">${escapeHtml(juego.nombre).toUpperCase()}</p>
-        </div>
+        </div>` : ''}
 
         <div id="jg-grilla" style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px; border-radius:12px; padding:8px; position:absolute; overflow:hidden; aspect-ratio:1">
           <div id="jg-grilla-fondo" style="position:absolute; inset:0; background:${fondoBg}; z-index:0"></div>
@@ -264,6 +266,8 @@ function render(datos, saldoInicial) {
         <div id="jg-capas-libres" style="position:absolute; inset:0; z-index:8; pointer-events:none"></div>
 
         <div id="jg-cadenas-luces" style="position:absolute; inset:0; z-index:9; pointer-events:none"></div>
+
+        <button id="jg-info" aria-label="Ver reglas y tabla de pagos" style="position:absolute; right:22px; top:22px; z-index:12; width:30px; height:30px; padding:0; border-radius:50%">ℹ</button>
 
         <div id="jg-premio-popup" style="position:absolute; z-index:15; display:none; border-radius:12px; background:rgba(0,0,0,.55); transition:opacity .25s; opacity:0; transform:translate(-50%,-50%)">
           <img id="jg-img-premio" style="position:absolute; z-index:0; display:none" />
@@ -357,6 +361,13 @@ function render(datos, saldoInicial) {
     girarImgEl.style.height = tamImg + 'px';
     girarTextoEl.style.display = 'none';
   }
+
+  // El jugador puede ver las mismas reglas y la misma tabla de pagos
+  // que ve el ensamblador: es la información con la que decide si
+  // apostar, no puede quedar del lado de adentro solamente.
+  raiz.querySelector('#jg-info').addEventListener('click', () => {
+    mostrarTablaPagos(raiz, simbolos, juego);
+  });
 
   const apuestaEl = raiz.querySelector('#jg-apuesta');
   const pintarApuesta = () => { apuestaEl.textContent = apuesta.toLocaleString('es-PY'); };
