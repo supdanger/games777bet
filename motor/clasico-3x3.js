@@ -1,0 +1,125 @@
+// =========================================================
+// MOTOR "clasico-3x3" — 3 rodillos, 1 línea de pago, wild.
+//
+// ÚNICA fuente de verdad del resultado: lo importan tanto el
+// servidor (api/jugar-girar.js, donde se juega con plata real) como
+// la vista previa y el simulador de RTP del ensamblador. Antes había
+// dos copias y se desincronizaron — así apareció el bug de pagar
+// pares en cualquier posición. Una sola copia, un solo lugar donde
+// corregir.
+//
+// Cada motor nuevo (3x5, ruleta, etc.) va en SU PROPIO archivo de
+// esta carpeta, con su propia función girar(). Este no se toca ni se
+// generaliza: los juegos que ya están calibrados dependen de que se
+// comporte siempre igual.
+// =========================================================
+
+export function elegirSimbolo(simbolos, total) {
+  let r = Math.random() * total;
+
+  for (const s of simbolos) {
+    r -= Number(s.peso) || 0;
+    if (r <= 0) return s;
+  }
+
+  return simbolos[simbolos.length - 1];
+}
+
+export function girar(simbolos) {
+  const total = simbolos.reduce(
+    (acumulado, simbolo) => acumulado + (Number(simbolo.peso) || 0),
+    0
+  ) || 1;
+
+  const grilla = [];
+
+  for (let columna = 0; columna < 3; columna++) {
+    grilla.push([
+      elegirSimbolo(simbolos, total),
+      elegirSimbolo(simbolos, total),
+      elegirSimbolo(simbolos, total),
+    ]);
+  }
+
+  const FILA_PAGO = 1;
+
+  const linea = [
+    grilla[0][FILA_PAGO],
+    grilla[1][FILA_PAGO],
+    grilla[2][FILA_PAGO],
+  ];
+
+  const esWild = (simbolo) => simbolo?.nombre?.toLowerCase() === 'wild';
+
+  // Dos símbolos "coinciden" si son el mismo, o si alguno es wild.
+  const coinciden = (a, b) =>
+    esWild(a) || esWild(b) || a?.nombre === b?.nombre;
+
+  const premioMayorDelJuego = Math.max(
+    0,
+    ...simbolos.map((simbolo) => Number(simbolo.pago_tres) || 0)
+  );
+
+  let premio = 0;
+  let nivel = null;
+  let simbolosGanadores = [];
+
+  // =========================================================
+  // 1. TRES IGUALES (los tres rodillos, con wild sustituyendo)
+  // =========================================================
+
+  const reales = linea.filter((simbolo) => !esWild(simbolo));
+
+  // Si hay wilds, el símbolo que define el premio es el primer real
+  // de la línea. Si son los tres wild, paga el propio wild.
+  const simboloBase = reales.length > 0 ? reales[0] : linea[0];
+
+  const todosCoinciden = reales.every(
+    (simbolo) => simbolo.nombre === simboloBase.nombre
+  );
+
+  if (todosCoinciden) {
+    premio = Number(simboloBase.pago_tres) || 0;
+
+    if (premio > 0) {
+      nivel = premio >= premioMayorDelJuego ? 'premio_mayor' : 'tres_iguales';
+      simbolosGanadores = [0, 1, 2];
+    }
+  }
+
+  // =========================================================
+  // 2. DOS IGUALES — ÚNICAMENTE rodillos 1 y 2
+  // =========================================================
+
+  if (!nivel && coinciden(linea[0], linea[1])) {
+    // Si el primero es wild, el que define el pago es el segundo.
+    const simboloPago = esWild(linea[0]) ? linea[1] : linea[0];
+
+    premio = Number(simboloPago?.pago_dos) || 0;
+
+    if (premio > 0) {
+      nivel = 'dos_iguales';
+      simbolosGanadores = [0, 1];
+    }
+  }
+
+  // =========================================================
+  // 3. NORMALIZACIÓN FINAL
+  // =========================================================
+
+  premio = Number.isFinite(Number(premio)) ? Number(premio) : 0;
+
+  if (premio <= 0) {
+    premio = 0;
+    nivel = null;
+    simbolosGanadores = [];
+  }
+
+  return {
+    grilla,
+    premio,
+    nivel,
+    filaPago: FILA_PAGO,
+    simbolosGanadores,
+  };
+}

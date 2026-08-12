@@ -1,5 +1,6 @@
 import { supabase } from './supabase.js';
 import { analizar } from './motor.js';
+import { girar } from '../motor/clasico-3x3.js';
 import { renderPreview } from './preview.js';
 import { listarClientesActivos } from './clientes.js';
 
@@ -56,6 +57,11 @@ export function renderEditor(el, juego, onCambio) {
       </div>
       <p id="ed-aviso" style="display:none; padding:8px 10px; border-radius:8px; font-size:13px; margin:0 0 12px"></p>
 
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px">
+        <button id="ed-simular">Simular 1.000.000 de giros</button>
+        <p id="ed-sim-out" class="hint" style="margin:0; flex:1"></p>
+      </div>
+
       <strong style="font-size:14px">Símbolos</strong>
       <div id="ed-tabla" style="display:flex; flex-direction:column; gap:6px; margin-top:8px"></div>
       <button id="ed-agregar" style="margin-top:10px">+ Agregar símbolo</button>
@@ -70,6 +76,7 @@ export function renderEditor(el, juego, onCambio) {
         <div style="max-width:170px"><div id="ed-marco"></div></div>
         <div style="max-width:170px"><div id="ed-cartel"></div></div>
         <div style="max-width:170px"><div id="ed-portada"></div></div>
+        <div style="max-width:170px"><div id="ed-carga"></div></div>
       </div>
     </div>
 
@@ -406,11 +413,104 @@ export function renderEditor(el, juego, onCambio) {
     onCambio();
   });
 
+  // Simulador: corre el MOTOR REAL (el mismo archivo que usa el
+  // servidor cuando se juega con plata) un millón de veces y compara
+  // el retorno obtenido contra el teórico del editor. Si los dos
+  // números no se parecen, hay un bug en el motor o en la tabla de
+  // pagos — que es exactamente lo que pasó cuando el motor pagaba
+  // pares en cualquier posición y nadie se dio cuenta jugando.
+  el.querySelector('#ed-simular').addEventListener('click', async () => {
+    const btn = el.querySelector('#ed-simular');
+    const out = el.querySelector('#ed-sim-out');
+
+    if (!simbolos.length) { out.textContent = 'Cargá símbolos primero.'; return; }
+
+    btn.disabled = true;
+    out.textContent = 'Simulando...';
+    // Ceder un frame para que el navegador alcance a pintar el
+    // "Simulando..." antes de trabarse con el millón de giros.
+    await new Promise((r) => setTimeout(r, 30));
+
+    const GIROS = 1_000_000;
+    let apostado = 0, devuelto = 0, ganadas = 0, mayor = 0;
+    const porNivel = { dos_iguales: 0, tres_iguales: 0, premio_mayor: 0 };
+
+    for (let i = 0; i < GIROS; i++) {
+      const r = girar(simbolos);
+      apostado += 1;
+      if (r.premio > 0) {
+        devuelto += r.premio;
+        ganadas++;
+        if (r.premio > mayor) mayor = r.premio;
+        if (r.nivel) porNivel[r.nivel]++;
+      }
+    }
+
+    const rtpReal = (devuelto / apostado) * 100;
+    const { rtp: rtpTeorico } = analizar(simbolos);
+    const desvio = Math.abs(rtpReal - rtpTeorico);
+
+    const color = desvio > 1.5 ? 'var(--danger)' : 'var(--text-dim)';
+    out.innerHTML = `
+      <span style="color:${color}">RTP simulado <strong>${rtpReal.toFixed(2)}%</strong> · teórico ${rtpTeorico.toFixed(2)}% · desvío ${desvio.toFixed(2)}%</span><br />
+      Ganó ${(ganadas / GIROS * 100).toFixed(1)}% de los giros · premio más alto ${mayor}x ·
+      dos iguales ${porNivel.dos_iguales.toLocaleString('es-PY')} ·
+      tres iguales ${porNivel.tres_iguales.toLocaleString('es-PY')} ·
+      mayor ${porNivel.premio_mayor.toLocaleString('es-PY')}
+      ${desvio > 1.5 ? '<br /><strong style="color:var(--danger)">Revisar: el motor no está pagando lo que dice la tabla.</strong>' : ''}
+    `;
+    btn.disabled = false;
+  });
+
+  // Chequeo antes de publicar: con 300 juegos es cuestión de tiempo
+  // que uno salga al catálogo a medio armar. Lo que rompe el juego
+  // frena la publicación; lo que solo queda feo avisa y deja decidir.
+  const revisarAntesDePublicar = () => {
+    const errores = [];
+    const avisos = [];
+
+    if (!simbolos.length) errores.push('No tiene símbolos cargados.');
+    const sinIcono = simbolos.filter((s) => !s.icono_url);
+    if (sinIcono.length) errores.push(`${sinIcono.length} símbolo(s) sin ícono: ${sinIcono.map((s) => s.nombre).join(', ')}.`);
+
+    if (simbolos.length) {
+      const { rtp } = analizar(simbolos);
+      if (rtp > 100) errores.push(`El RTP es ${rtp.toFixed(2)}% — el juego pierde plata en cada giro.`);
+      else if (rtp < 85 || rtp > 97) avisos.push(`RTP de ${rtp.toFixed(2)}%, fuera del rango habitual (85-97%).`);
+    }
+
+    if (Number(juego.min_bet) <= 0) errores.push('La apuesta mínima tiene que ser mayor a cero.');
+    if (Number(juego.max_bet) < Number(juego.min_bet)) errores.push('La apuesta máxima es menor que la mínima.');
+
+    if (!juego.portada_url) avisos.push('Sin portada: en el catálogo de Win777 va a salir en blanco.');
+    if (!sonidos.length) avisos.push('Sin sonidos cargados.');
+
+    const fuera = (x, y, nombre) => {
+      if (x < 0 || x > 100 || y < 0 || y > 100) avisos.push(`${nombre} quedó fuera de la pantalla.`);
+    };
+    fuera(juego.girar_x ?? 50, juego.girar_y ?? 90, 'El botón de girar');
+
+    return { errores, avisos };
+  };
+
   el.querySelector('#ed-publicar').addEventListener('click', async () => {
     if (!juego.publicado) {
       if (juego.estado !== 'listo') {
         alert('Marcá el juego como Listo antes de publicarlo.');
         return;
+      }
+
+      const { errores, avisos } = revisarAntesDePublicar();
+
+      if (errores.length) {
+        alert('No se puede publicar todavía:\n\n' + errores.map((e) => '· ' + e).join('\n'));
+        return;
+      }
+      if (avisos.length) {
+        const seguir = confirm('Se puede publicar, pero revisá esto:\n\n'
+          + avisos.map((a) => '· ' + a).join('\n')
+          + '\n\n¿Publicar igual?');
+        if (!seguir) return;
       }
       // Subir version es lo que le avisa a Win777, la próxima vez
       // que sincronice catálogo, que hay algo nuevo para traer.
@@ -461,6 +561,7 @@ export function renderEditor(el, juego, onCambio) {
   pintarImagenPosicionable('#ed-marco', 'marco_url', { marco_x: 50, marco_y: 50, marco_ancho: 100, marco_alto: 100 }, 'Marco');
   pintarImagenPosicionable('#ed-cartel', 'cartel_url', { cartel_x: 50, cartel_y: 15, cartel_ancho: 75, cartel_alto: 16 }, 'Cartel');
   pintarImagen('#ed-portada', 'portada_url', 'Portada (catálogo)');
+  pintarImagen('#ed-carga', 'carga_url', 'Pantalla de carga');
   cargarSonidos();
   cargarDigitos();
   cargarEfectos();

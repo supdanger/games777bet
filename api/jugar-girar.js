@@ -1,5 +1,5 @@
 import { supabaseAdmin } from './_lib/supabaseAdmin.js';
-import { girar } from './_lib/girar.js';
+import { girar } from '../motor/clasico-3x3.js';
 import { apostar, premiar } from './_lib/proveedorCliente.js';
 
 // Resuelve un giro con plata real. El navegador manda la apuesta y

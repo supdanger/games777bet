@@ -23,6 +23,7 @@ export function renderApp(raiz, session, onSalir) {
       <div style="display:flex; gap:8px; margin-bottom:20px">
         <input id="ap-nuevo-nombre" placeholder="Nombre del juego nuevo" style="flex:1" />
         <button class="primary" id="ap-crear">Crear juego</button>
+        <button id="ap-duplicar" style="display:none">Duplicar el seleccionado</button>
       </div>
 
       <div id="ap-editor"></div>
@@ -64,6 +65,9 @@ export function renderApp(raiz, session, onSalir) {
       btn.addEventListener('click', () => { seleccionado = btn.dataset.id; cargarLista(); mostrarEditor(); });
     });
 
+    const btnDup = raiz.querySelector('#ap-duplicar');
+    if (btnDup) btnDup.style.display = seleccionado ? 'inline-flex' : 'none';
+
     mostrarEditor();
   };
 
@@ -75,6 +79,38 @@ export function renderApp(raiz, session, onSalir) {
 
     renderEditor(editorEl, juego, cargarLista);
   };
+
+  // Duplicar: clona el juego entero (símbolos, imágenes, capas,
+  // sonidos, botones, posiciones) para no rearmar todo el layout cada
+  // vez. La copia entra como borrador, nunca publicada.
+  raiz.querySelector('#ap-duplicar').addEventListener('click', async () => {
+    const original = juegos.find((j) => j.id === seleccionado);
+    if (!original) return;
+
+    const nombre = prompt('Nombre del juego nuevo:', original.nombre + ' (copia)');
+    if (!nombre?.trim()) return;
+
+    const slug = prompt('Slug del juego nuevo (sin espacios, va en la URL):', original.slug + '-copia');
+    if (!slug?.trim()) return;
+
+    const btn = raiz.querySelector('#ap-duplicar');
+    btn.disabled = true;
+    btn.textContent = 'Duplicando...';
+
+    const { data, error } = await supabase.rpc('duplicar_juego', {
+      p_juego_id: original.id,
+      p_nombre: nombre.trim(),
+      p_slug: slug.trim().toLowerCase().replace(/\s+/g, '-'),
+    });
+
+    btn.disabled = false;
+    btn.textContent = 'Duplicar el seleccionado';
+
+    if (error) { alert('No se pudo duplicar: ' + error.message); return; }
+
+    seleccionado = data;
+    cargarLista();
+  });
 
   raiz.querySelector('#ap-crear').addEventListener('click', async () => {
     const input = raiz.querySelector('#ap-nuevo-nombre');

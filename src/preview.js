@@ -8,40 +8,8 @@
 // resultado en vivo sobre el tamaño real de un celular.
 
 import { supabase } from './supabase.js';
-
-function elegirSimbolo(simbolos, total) {
-  let r = Math.random() * total;
-  for (const s of simbolos) { r -= s.peso; if (r <= 0) return s; }
-  return simbolos[simbolos.length - 1];
-}
-
-// La grilla se arma columna por columna: grilla[col] son los 3
-// símbolos verticales de ESE rodillo (arriba/medio/abajo).
-function girar(simbolos) {
-  const total = simbolos.reduce((a, s) => a + s.peso, 0) || 1;
-  const grilla = [];
-  for (let c = 0; c < 3; c++) {
-    grilla.push([elegirSimbolo(simbolos, total), elegirSimbolo(simbolos, total), elegirSimbolo(simbolos, total)]);
-  }
-
-  // La línea de pago cruza los tres rodillos por la fila del medio —
-  // un símbolo de cada columna, no los tres de una sola columna.
-  const FILA_PAGO = 1;
-  const linea = [grilla[0][FILA_PAGO], grilla[1][FILA_PAGO], grilla[2][FILA_PAGO]];
-
-  const reales = linea.filter((s) => s.nombre !== 'wild');
-  const cand = reales.length ? reales[0] : linea[0];
-
-  let premio = 0, nivel = null;
-  if (linea.every((s) => s === cand || s.nombre === 'wild')) {
-    premio = (reales.length ? cand : linea[0]).pago_tres;
-    nivel = premio >= Math.max(...simbolos.map((s) => s.pago_tres)) ? 'premio_mayor' : 'tres_iguales';
-  } else if (linea[0] === linea[1] || (linea[0].nombre === 'wild' || linea[1].nombre === 'wild')) {
-    premio = (linea[0].nombre === 'wild' ? linea[1] : linea[0]).pago_dos || 0;
-    if (premio > 0) nivel = 'dos_iguales';
-  }
-  return { grilla, premio, nivel, filaPago: FILA_PAGO };
-}
+import { girar, elegirSimbolo } from '../motor/clasico-3x3.js';
+import { ANCHO_ESC, ALTO_ESC, construirCadena, animarCadena } from './luces.js';
 
 function celdaHtml(s) {
   if (s.icono_url) return `<img src="${s.icono_url}" style="width:60%; height:60%; object-fit:contain" />`;
@@ -154,6 +122,35 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   let capasLibres = filasLibres || [];
   let libreActual = capasLibres[0]?.id ?? null;
 
+  // Cadenas de luces: mismo criterio que las imágenes libres,
+  // cantidad variable. Cada una guarda su modo (marco/libre), focos,
+  // colores y animación.
+  const { data: filasCadenas } = await supabase.from('cadenas_luces').select('*').eq('juego_id', juego.id).order('orden');
+  let cadenasLuces = filasCadenas || [];
+  let cadenaActual = cadenasLuces[0]?.id ?? null;
+
+  // Botones chicos (−, +, x1, x2, x3): sin fila configurada, cada uno
+  // se dibuja con su texto por defecto. Mismo criterio que el de
+  // girar: tamaño del botón y de la imagen por separado.
+  const CLAVES_BOTON = [
+    { clave: 'menos', etiqueta: '− (bajar apuesta)' },
+    { clave: 'mas', etiqueta: '+ (subir apuesta)' },
+    { clave: 'x1', etiqueta: 'x1' },
+    { clave: 'x2', etiqueta: 'x2' },
+    { clave: 'x3', etiqueta: 'x3' },
+  ];
+  const { data: filasBotones } = await supabase.from('botones').select('*').eq('juego_id', juego.id);
+  const botones = {};
+  CLAVES_BOTON.forEach(({ clave }) => {
+    const fila = (filasBotones || []).find((f) => f.clave === clave);
+    botones[clave] = {
+      id: fila?.id || null, imagen_url: fila?.imagen_url || null,
+      tamano: fila?.tamano ?? 28, imagen_tamano: fila?.imagen_tamano ?? 70,
+      sin_fondo: fila?.sin_fondo ?? false,
+    };
+  });
+  let botonActual = 'menos';
+
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:100; display:flex; align-items:center; justify-content:center; padding:20px; gap:12px; flex-wrap:wrap';
 
@@ -198,26 +195,36 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
 
         <div id="pv-capas-libres" style="position:absolute; inset:0; z-index:8; pointer-events:none"></div>
 
+        <div id="pv-cadenas-luces" style="position:absolute; inset:0; z-index:9; pointer-events:none"></div>
+
         <div id="pv-premio-popup" style="position:absolute; z-index:15; display:none; border-radius:12px; background:rgba(0,0,0,.55); transition:opacity .25s; opacity:0; transform:translate(-50%,-50%)">
           <img id="pv-img-premio" style="position:absolute; z-index:0; display:none" />
           <strong id="pv-premio-monto" style="position:absolute; z-index:1; font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5); white-space:nowrap"></strong>
         </div>
 
-        <div style="display:flex; align-items:flex-end; gap:10px; position:absolute; left:22px; right:22px; bottom:22px; z-index:10">
-          <div style="flex:1">
-            <p class="hint" style="margin:0">Saldo de prueba</p>
-            <strong id="pv-saldo" style="font-size:18px">10.000</strong>
-          </div>
-          <div style="display:flex; align-items:center; gap:6px">
-            <button id="pv-apuesta-menos" aria-label="Bajar apuesta" style="width:28px; height:28px; padding:0">−</button>
-            <div style="text-align:center; min-width:66px">
-              <p class="hint" style="margin:0">Apuesta</p>
-              <strong id="pv-apuesta" style="font-size:15px"></strong>
-            </div>
-            <button id="pv-apuesta-mas" aria-label="Subir apuesta" style="width:28px; height:28px; padding:0">+</button>
-          </div>
-          <div id="pv-turbo" style="display:flex; gap:3px"></div>
+        <div id="pv-grupo-saldo" style="position:absolute; z-index:10; white-space:nowrap; display:flex; flex-direction:column; align-items:center; justify-content:center; background-size:100% 100%; background-repeat:no-repeat">
+          <p class="hint" style="margin:0">Saldo de prueba</p>
+          <strong id="pv-saldo" style="font-size:18px">10.000</strong>
         </div>
+
+        <div id="pv-grupo-apuesta" style="position:absolute; z-index:10; display:flex; align-items:center; gap:6px; white-space:nowrap">
+          <button id="pv-apuesta-menos" aria-label="Bajar apuesta" style="padding:0; display:flex; align-items:center; justify-content:center; overflow:hidden">
+            <span class="pv-btn-texto">−</span>
+            <img class="pv-btn-img" style="display:none; object-fit:contain" />
+          </button>
+          <div id="pv-caja-apuesta" style="display:flex; flex-direction:column; align-items:center; justify-content:center; background-size:100% 100%; background-repeat:no-repeat">
+            <p class="hint" style="margin:0">Apuesta</p>
+            <strong id="pv-apuesta" style="font-size:15px"></strong>
+          </div>
+          <button id="pv-apuesta-mas" aria-label="Subir apuesta" style="padding:0; display:flex; align-items:center; justify-content:center; overflow:hidden">
+            <span class="pv-btn-texto">+</span>
+            <img class="pv-btn-img" style="display:none; object-fit:contain" />
+          </button>
+        </div>
+
+        <div id="pv-fichas" style="position:absolute; z-index:10; display:flex; gap:4px; flex-wrap:wrap; justify-content:center; white-space:nowrap"></div>
+
+        <div id="pv-turbo" style="position:absolute; z-index:10; display:flex; gap:3px; white-space:nowrap"></div>
 
         <button id="pv-girar" style="position:absolute; z-index:11; padding:0; display:flex; align-items:center; justify-content:center; border-radius:50%; overflow:hidden">
           <span id="pv-girar-texto" style="font-size:14px">Girar</span>
@@ -259,6 +266,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   const imgPremio = overlay.querySelector('#pv-img-premio');
   const montoPremioEl = overlay.querySelector('#pv-premio-monto');
   const capasLibresEl = overlay.querySelector('#pv-capas-libres');
+  const cadenasLuzEl = overlay.querySelector('#pv-cadenas-luces');
 
   const aplicarOrden = () => {
     ordenCapas.forEach((capa, i) => {
@@ -289,6 +297,48 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     capasLibresEl.innerHTML = capasLibres.map((c) => c.imagen_url ? `
       <img src="${c.imagen_url}" style="position:absolute; left:${c.x}%; top:${c.y}%; width:${c.tamano}%; height:auto; transform:translate(-50%,-50%) rotate(${c.angulo}deg); filter:${filtroCss(c.blur, c.oscurecer)}" />
     ` : '').join('');
+  };
+
+  // ---------------- Cadenas de luces ----------------
+  // La pantalla del juego es SIEMPRE 420x860 (ver escala fija en
+  // main), así que la geometría se calcula en esos píxeles fijos sin
+  // depender del dispositivo.
+  // Cadenas de luces — geometría, formas y animación viven en
+  // src/luces.js, compartido con la otra pantalla.
+  const rectMarco = () => {
+    if (juego.marco_url) {
+      const w = pos.marco_ancho / 100 * ANCHO_ESC, h = pos.marco_alto / 100 * ALTO_ESC;
+      return { left: pos.marco_x / 100 * ANCHO_ESC - w / 2, top: pos.marco_y / 100 * ALTO_ESC - h / 2, w, h };
+    }
+    return { left: ANCHO_ESC * 0.1, top: ALTO_ESC * 0.1, w: ANCHO_ESC * 0.8, h: ALTO_ESC * 0.8 };
+  };
+
+  // Rehace los focos de UNA cadena (posiciones, forma, cantidad). No
+  // corre en cada frame: solo cuando cambia la configuración.
+  const reconstruirCadena = (c) => {
+    let wrap = cadenasLuzEl.querySelector(`[data-cadena="${c.id}"]`);
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.dataset.cadena = c.id;
+      wrap.style.cssText = 'position:absolute; inset:0; pointer-events:none';
+      cadenasLuzEl.appendChild(wrap);
+    }
+    construirCadena(wrap, c, rectMarco);
+  };
+  cadenasLuces.forEach(reconstruirCadena);
+
+  // Un solo intervalo anima TODAS las cadenas — nunca uno por cadena,
+  // para no ir sumando timers sueltos si se agregan varias.
+  const t0Animacion = Date.now();
+  const timerCadenas = setInterval(() => {
+    const ahora = Date.now() - t0Animacion;
+    cadenasLuces.forEach((c) => animarCadena(c, ahora));
+  }, 90);
+
+  // Saca el modo arrastre de todos los focos al salir de la pestaña
+  // Luces — si no, quedarían tocables encima del resto del juego.
+  const desactivarArrastreLuces = () => {
+    cadenasLuzEl.querySelectorAll('[data-cadena]').forEach((wrap) => { wrap.style.pointerEvents = 'none'; });
   };
 
   // El cuadro de premio tiene su propia posición POR NIVEL — se
@@ -381,7 +431,9 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
         <button data-capa="grilla" class="pv-tab">Grilla</button>
         <button data-capa="cartel" class="pv-tab">Cartel</button>
         <button data-capa="libres" class="pv-tab">Libres</button>
+        <button data-capa="luces" class="pv-tab">Luces</button>
         <button data-capa="girar" class="pv-tab">Girar</button>
+        <button data-capa="controles" class="pv-tab">Controles</button>
         <button data-capa="premio" class="pv-tab">Premio</button>
       </div>
 
@@ -425,14 +477,30 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     if (capaActual === 'libres') {
       panel.querySelector('#pv-orden-wrap').style.display = 'none';
       panel.querySelector('#pv-guardar').style.display = 'none';
+      desactivarArrastreLuces();
       pintarPanelLibres(slidersEl);
       return;
     }
+
+    if (capaActual === 'luces') {
+      panel.querySelector('#pv-orden-wrap').style.display = 'none';
+      panel.querySelector('#pv-guardar').style.display = 'none';
+      pintarPanelLuces(slidersEl);
+      return;
+    }
+    desactivarArrastreLuces();
 
     if (capaActual === 'girar') {
       panel.querySelector('#pv-orden-wrap').style.display = 'none';
       panel.querySelector('#pv-guardar').style.display = 'none';
       pintarPanelGirar(slidersEl);
+      return;
+    }
+
+    if (capaActual === 'controles') {
+      panel.querySelector('#pv-orden-wrap').style.display = 'none';
+      panel.querySelector('#pv-guardar').style.display = 'none';
+      pintarPanelControles(slidersEl);
       return;
     }
 
@@ -528,6 +596,106 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     girar_sin_fondo: juego.girar_sin_fondo ?? false,
   };
 
+  const posGrupos = {
+    saldo_x: juego.saldo_x ?? 14, saldo_y: juego.saldo_y ?? 96,
+    apuesta_x: juego.apuesta_x ?? 50, apuesta_y: juego.apuesta_y ?? 96,
+    turbo_x: juego.turbo_x ?? 86, turbo_y: juego.turbo_y ?? 96,
+    fichas_x: juego.fichas_x ?? 50, fichas_y: juego.fichas_y ?? 88,
+    saldo_ancho: juego.saldo_ancho ?? 110, saldo_alto: juego.saldo_alto ?? 44,
+    apuesta_ancho: juego.apuesta_ancho ?? 110, apuesta_alto: juego.apuesta_alto ?? 44,
+    saldo_fondo_url: juego.saldo_fondo_url || null,
+    apuesta_fondo_url: juego.apuesta_fondo_url || null,
+  };
+
+  let modoApuesta = juego.modo_apuesta || 'mixto';
+  // Sin fichas configuradas, se arman solas a partir del mínimo para
+  // que la pantalla nunca quede sin opciones que tocar.
+  const fichasPorDefecto = [1, 2, 5, 20, 50].map((m) => apuestaMin * m).filter((f) => f <= apuestaMax);
+  let fichas = (juego.fichas?.length ? juego.fichas.map(Number) : fichasPorDefecto);
+
+  const grupoSaldoEl = overlay.querySelector('#pv-grupo-saldo');
+  const grupoApuestaEl = overlay.querySelector('#pv-grupo-apuesta');
+  const grupoTurboEl = overlay.querySelector('#pv-turbo');
+  const cajaApuestaEl = overlay.querySelector('#pv-caja-apuesta');
+  const fichasEl = overlay.querySelector('#pv-fichas');
+
+  const aplicarGrupos = () => {
+    const ubicar = (el, x, y) => Object.assign(el.style, {
+      left: x + '%', top: y + '%', transform: 'translate(-50%,-50%)',
+    });
+    ubicar(grupoSaldoEl, posGrupos.saldo_x, posGrupos.saldo_y);
+    ubicar(grupoApuestaEl, posGrupos.apuesta_x, posGrupos.apuesta_y);
+    ubicar(grupoTurboEl, posGrupos.turbo_x, posGrupos.turbo_y);
+    ubicar(fichasEl, posGrupos.fichas_x, posGrupos.fichas_y);
+
+    // Los recuadros llevan la imagen como fondo estirado a su tamaño:
+    // así el texto queda siempre encima y centrado, sin importar qué
+    // imagen subas.
+    Object.assign(grupoSaldoEl.style, {
+      width: posGrupos.saldo_ancho + 'px', height: posGrupos.saldo_alto + 'px',
+      backgroundImage: posGrupos.saldo_fondo_url ? `url('${posGrupos.saldo_fondo_url}')` : 'none',
+    });
+    Object.assign(cajaApuestaEl.style, {
+      width: posGrupos.apuesta_ancho + 'px', height: posGrupos.apuesta_alto + 'px',
+      backgroundImage: posGrupos.apuesta_fondo_url ? `url('${posGrupos.apuesta_fondo_url}')` : 'none',
+    });
+  };
+  aplicarGrupos();
+
+  // Qué controles se ven, según el modo elegido en el ensamblador.
+  const aplicarModo = () => {
+    const conFichas = modoApuesta === 'fichas' || modoApuesta === 'mixto';
+    const conMasMenos = modoApuesta === 'mas_menos' || modoApuesta === 'mixto';
+    fichasEl.style.display = conFichas ? 'flex' : 'none';
+    overlay.querySelector('#pv-apuesta-menos').style.display = conMasMenos ? 'flex' : 'none';
+    overlay.querySelector('#pv-apuesta-mas').style.display = conMasMenos ? 'flex' : 'none';
+    if (conFichas) pintarFichas();
+  };
+
+  const pintarFichas = () => {
+    fichasEl.innerHTML = fichas.map((f) => `
+      <button data-f="${f}" style="padding:3px 9px; font-size:11px; ${f === apuesta ? 'border-color:var(--accent); color:var(--accent)' : ''}">${Number(f).toLocaleString('es-PY')}</button>
+    `).join('');
+    fichasEl.querySelectorAll('button').forEach((b) => {
+      b.addEventListener('click', () => {
+        if (girando) return;
+        apuesta = Math.max(apuestaMin, Math.min(apuestaMax, Number(b.dataset.f)));
+        pintarApuesta();
+        pintarFichas();
+      });
+    });
+  };
+
+  // Pinta un botón chico: si tiene imagen, la muestra adentro con su
+  // propio tamaño; si no, deja el texto de siempre.
+  const aplicarBoton = (el, cfg) => {
+    if (!el) return;
+    Object.assign(el.style, {
+      width: cfg.tamano + 'px', height: cfg.tamano + 'px',
+      background: cfg.sin_fondo ? 'transparent' : '',
+      border: cfg.sin_fondo ? 'none' : '',
+    });
+    const img = el.querySelector('.pv-btn-img');
+    const texto = el.querySelector('.pv-btn-texto');
+    if (cfg.imagen_url) {
+      const tam = cfg.tamano * cfg.imagen_tamano / 100;
+      img.src = cfg.imagen_url;
+      img.style.display = 'block';
+      img.style.width = tam + 'px';
+      img.style.height = tam + 'px';
+      if (texto) texto.style.display = 'none';
+    } else {
+      img.style.display = 'none';
+      if (texto) texto.style.display = 'block';
+    }
+  };
+
+  const aplicarBotonesApuesta = () => {
+    aplicarBoton(overlay.querySelector('#pv-apuesta-menos'), botones.menos);
+    aplicarBoton(overlay.querySelector('#pv-apuesta-mas'), botones.mas);
+  };
+  aplicarBotonesApuesta();
+
   // El botón es un círculo posicionable: la imagen va adentro con su
   // propio tamaño (en % del botón) para poder calzarla sin deformar.
   const aplicarGirar = () => {
@@ -555,32 +723,43 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   const apuestaEl = overlay.querySelector('#pv-apuesta');
   const pintarApuesta = () => { apuestaEl.textContent = apuesta.toLocaleString('es-PY'); };
   pintarApuesta();
+  aplicarModo();
 
   overlay.querySelector('#pv-apuesta-mas').addEventListener('click', () => {
     if (girando) return;
     apuesta = Math.min(apuestaMax, apuesta + pasoApuesta);
     pintarApuesta();
+    if (fichasEl.style.display !== 'none') pintarFichas();
   });
   overlay.querySelector('#pv-apuesta-menos').addEventListener('click', () => {
     if (girando) return;
     apuesta = Math.max(apuestaMin, apuesta - pasoApuesta);
     pintarApuesta();
+    if (fichasEl.style.display !== 'none') pintarFichas();
   });
 
   // La velocidad solo acorta la animación: el resultado ya está
   // decidido antes de que el primer rodillo se mueva.
   const turboEl = overlay.querySelector('#pv-turbo');
   const pintarTurbo = () => {
-    turboEl.innerHTML = [1, 2, 3].map((v) => `
-      <button data-v="${v}" style="padding:2px 7px; font-size:11px; ${v === velocidad ? 'border-color:var(--accent); color:var(--accent)' : ''}">x${v}</button>
-    `).join('');
+    turboEl.innerHTML = [1, 2, 3].map((v) => {
+      const cfg = botones['x' + v];
+      const activo = v === velocidad;
+      return `
+        <button data-v="${v}" style="padding:0; display:flex; align-items:center; justify-content:center; overflow:hidden; ${activo ? 'border-color:var(--accent); color:var(--accent)' : ''}">
+          <span class="pv-btn-texto" style="font-size:11px">x${v}</span>
+          <img class="pv-btn-img" style="display:none; object-fit:contain" />
+        </button>
+      `;
+    }).join('');
     turboEl.querySelectorAll('button').forEach((b) => {
+      aplicarBoton(b, botones['x' + b.dataset.v]);
       b.addEventListener('click', () => { velocidad = Number(b.dataset.v); pintarTurbo(); });
     });
   };
   pintarTurbo();
 
-  const cerrar = () => { Object.values(audios).forEach((a) => a.pause()); overlay.remove(); };
+  const cerrar = () => { Object.values(audios).forEach((a) => a.pause()); clearInterval(timerCadenas); overlay.remove(); };
   overlay.querySelector('#pv-cerrar').addEventListener('click', cerrar);
 
   overlay.querySelector('#pv-info').addEventListener('click', () => mostrarTablaPagos(overlay, simbolos, juego));
@@ -803,6 +982,472 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
         paso_apuesta: paso,
       }).eq('id', juego.id);
       msgEl.textContent = error ? error.message : 'Guardado ✓ (el paso nuevo se aplica al reabrir)';
+    });
+  }
+
+  async function subirArchivoBoton(archivo, clave) {
+    const ruta = `botones/${juego.id}/${clave}-${Date.now()}-${archivo.name}`;
+    const { error } = await supabase.storage.from('assets').upload(ruta, archivo, { upsert: true });
+    if (error) { alert('No se pudo subir: ' + error.message); return null; }
+    const { data } = supabase.storage.from('assets').getPublicUrl(ruta);
+    return data.publicUrl;
+  }
+
+  // Sub-panel "Controles": arriba la posición de los tres grupos
+  // (saldo, apuesta, velocidad), abajo cada botón chico por separado
+  // con su imagen y sus dos tamaños, igual que el de girar.
+  function pintarPanelControles(container) {
+    const cfg = botones[botonActual];
+    const sl = (campo, etiqueta, min, max, unidad, valor, grupo) => `
+      <label style="display:block; margin-bottom:8px; font-size:12px">${etiqueta} <span class="hint" id="pc-out-${campo}">${valor}${unidad}</span>
+        <input type="range" min="${min}" max="${max}" value="${valor}" data-campo="${campo}" data-grupo="${grupo}" />
+      </label>
+    `;
+
+    container.innerHTML = `
+      <p style="font-size:12px; color:var(--text-dim); margin:0 0 8px">Modo de apuesta</p>
+      <select id="pc-modo" style="width:100%; margin-bottom:6px">
+        <option value="fichas" ${modoApuesta === 'fichas' ? 'selected' : ''}>Solo fichas</option>
+        <option value="mas_menos" ${modoApuesta === 'mas_menos' ? 'selected' : ''}>Solo + y −</option>
+        <option value="mixto" ${modoApuesta === 'mixto' ? 'selected' : ''}>Mixto (fichas + ajuste fino)</option>
+      </select>
+      <label style="display:block; margin-bottom:10px; font-size:12px">Montos de las fichas (separados por coma)
+        <input id="pc-fichas" type="text" value="${fichas.join(', ')}" style="width:100%" />
+      </label>
+      ${sl('fichas_x', 'Fichas — Posición X', 0, 100, '%', posGrupos.fichas_x, 'grupo')}
+      ${sl('fichas_y', 'Fichas — Posición Y', 0, 100, '%', posGrupos.fichas_y, 'grupo')}
+
+      <p style="font-size:12px; color:var(--text-dim); margin:10px 0 8px">Saldo</p>
+      ${sl('saldo_x', 'Posición X', 0, 100, '%', posGrupos.saldo_x, 'grupo')}
+      ${sl('saldo_y', 'Posición Y', 0, 100, '%', posGrupos.saldo_y, 'grupo')}
+      ${sl('saldo_ancho', 'Ancho del recuadro', 60, 240, 'px', posGrupos.saldo_ancho, 'grupo')}
+      ${sl('saldo_alto', 'Alto del recuadro', 24, 120, 'px', posGrupos.saldo_alto, 'grupo')}
+      <label style="display:block; height:48px; border-radius:8px; border:1px dashed var(--border); background:var(--surface-alt); cursor:pointer; overflow:hidden; position:relative; margin-bottom:6px">
+        ${posGrupos.saldo_fondo_url ? `<img src="${posGrupos.saldo_fondo_url}" style="width:100%; height:100%; object-fit:contain" />` : '<span class="hint" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px">Fondo del recuadro</span>'}
+        <input type="file" accept="image/*" hidden id="pc-fondo-saldo" />
+      </label>
+      ${posGrupos.saldo_fondo_url ? '<button id="pc-quitar-saldo" style="width:100%; margin-bottom:10px; font-size:11px">Quitar fondo</button>' : ''}
+
+      <p style="font-size:12px; color:var(--text-dim); margin:10px 0 8px">Apuesta (− y +)</p>
+      ${sl('apuesta_x', 'Posición X', 0, 100, '%', posGrupos.apuesta_x, 'grupo')}
+      ${sl('apuesta_y', 'Posición Y', 0, 100, '%', posGrupos.apuesta_y, 'grupo')}
+      ${sl('apuesta_ancho', 'Ancho del recuadro', 60, 240, 'px', posGrupos.apuesta_ancho, 'grupo')}
+      ${sl('apuesta_alto', 'Alto del recuadro', 24, 120, 'px', posGrupos.apuesta_alto, 'grupo')}
+      <label style="display:block; height:48px; border-radius:8px; border:1px dashed var(--border); background:var(--surface-alt); cursor:pointer; overflow:hidden; position:relative; margin-bottom:6px">
+        ${posGrupos.apuesta_fondo_url ? `<img src="${posGrupos.apuesta_fondo_url}" style="width:100%; height:100%; object-fit:contain" />` : '<span class="hint" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px">Fondo del recuadro</span>'}
+        <input type="file" accept="image/*" hidden id="pc-fondo-apuesta" />
+      </label>
+      ${posGrupos.apuesta_fondo_url ? '<button id="pc-quitar-apuesta" style="width:100%; margin-bottom:10px; font-size:11px">Quitar fondo</button>' : ''}
+
+      <p style="font-size:12px; color:var(--text-dim); margin:10px 0 8px">Velocidad (x1 x2 x3)</p>
+      ${sl('turbo_x', 'Posición X', 0, 100, '%', posGrupos.turbo_x, 'grupo')}
+      ${sl('turbo_y', 'Posición Y', 0, 100, '%', posGrupos.turbo_y, 'grupo')}
+
+      <p style="font-size:12px; color:var(--text-dim); margin:14px 0 8px">Aspecto de cada botón</p>
+      <div id="pc-chips" style="display:flex; gap:4px; flex-wrap:wrap; margin-bottom:10px"></div>
+
+      <label style="display:block; height:64px; border-radius:8px; border:1px dashed var(--border); background:var(--surface-alt); cursor:pointer; overflow:hidden; position:relative; margin-bottom:8px">
+        ${cfg.imagen_url ? `<img src="${cfg.imagen_url}" style="width:100%; height:100%; object-fit:contain" />` : '<span class="hint" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px">Subir imagen</span>'}
+        <input type="file" accept="image/*" hidden id="pc-subir" />
+      </label>
+      ${cfg.imagen_url ? '<button id="pc-quitar-img" style="width:100%; margin-bottom:10px; font-size:12px">Quitar imagen</button>' : ''}
+      ${sl('tamano', 'Tamaño del botón', 18, 100, 'px', cfg.tamano, 'boton')}
+      ${sl('imagen_tamano', 'Tamaño de la imagen', 20, 140, '%', cfg.imagen_tamano, 'boton')}
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin:8px 0">
+        <input type="checkbox" id="pc-sinfondo" ${cfg.sin_fondo ? 'checked' : ''} /> Ocultar el fondo del botón
+      </label>
+
+      <button class="primary" id="pc-guardar" style="width:100%; margin-top:6px">Guardar todo</button>
+      <p id="pc-msg" class="hint"></p>
+    `;
+
+    const chipsEl = container.querySelector('#pc-chips');
+    chipsEl.innerHTML = CLAVES_BOTON.map(({ clave, etiqueta }) => `
+      <button data-clave="${clave}" style="font-size:11px; ${clave === botonActual ? 'border-color:var(--accent); color:var(--accent)' : ''}">${etiqueta}</button>
+    `).join('');
+    chipsEl.querySelectorAll('button').forEach((b) => {
+      b.addEventListener('click', () => { botonActual = b.dataset.clave; pintarPanelControles(container); });
+    });
+
+    container.querySelectorAll('input[type="range"]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const campo = input.dataset.campo;
+        const valor = Number(input.value);
+        if (input.dataset.grupo === 'grupo') {
+          posGrupos[campo] = valor;
+          aplicarGrupos();
+        } else {
+          botones[botonActual][campo] = valor;
+          aplicarBotonesApuesta();
+          pintarTurbo();
+        }
+        const unidad = ['tamano', 'saldo_ancho', 'saldo_alto', 'apuesta_ancho', 'apuesta_alto'].includes(campo) ? 'px' : '%';
+        container.querySelector(`#pc-out-${campo}`).textContent = input.value + unidad;
+      });
+    });
+
+    container.querySelector('#pc-sinfondo').addEventListener('change', (e) => {
+      botones[botonActual].sin_fondo = e.target.checked;
+      aplicarBotonesApuesta();
+      pintarTurbo();
+    });
+
+    container.querySelector('#pc-modo').addEventListener('change', (e) => {
+      modoApuesta = e.target.value;
+      aplicarModo();
+    });
+
+    container.querySelector('#pc-fichas').addEventListener('change', (e) => {
+      const lista = e.target.value.split(',')
+        .map((t) => Number(String(t).replace(/[^\d]/g, '')))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      if (lista.length) { fichas = lista; aplicarModo(); }
+    });
+
+    // Fondos de los dos recuadros. Se aplican al toque para poder
+    // ajustar ancho y alto viendo la imagen ya puesta.
+    const subirFondo = async (input, campo, quitarId) => {
+      container.querySelector(input)?.addEventListener('change', async (e) => {
+        const archivo = e.target.files?.[0];
+        if (!archivo) return;
+        const url = await subirArchivoBoton(archivo, campo);
+        if (url) { posGrupos[campo] = url; aplicarGrupos(); pintarPanelControles(container); }
+      });
+      container.querySelector(quitarId)?.addEventListener('click', () => {
+        posGrupos[campo] = null; aplicarGrupos(); pintarPanelControles(container);
+      });
+    };
+    subirFondo('#pc-fondo-saldo', 'saldo_fondo_url', '#pc-quitar-saldo');
+    subirFondo('#pc-fondo-apuesta', 'apuesta_fondo_url', '#pc-quitar-apuesta');
+
+    container.querySelector('#pc-subir').addEventListener('change', async (e) => {
+      const archivo = e.target.files?.[0];
+      if (!archivo) return;
+      const url = await subirArchivoBoton(archivo, botonActual);
+      if (url) {
+        botones[botonActual].imagen_url = url;
+        aplicarBotonesApuesta();
+        pintarTurbo();
+        pintarPanelControles(container);
+      }
+    });
+
+    container.querySelector('#pc-quitar-img')?.addEventListener('click', () => {
+      botones[botonActual].imagen_url = null;
+      aplicarBotonesApuesta();
+      pintarTurbo();
+      pintarPanelControles(container);
+    });
+
+    container.querySelector('#pc-guardar').addEventListener('click', async () => {
+      const msgEl = container.querySelector('#pc-msg');
+      msgEl.textContent = 'Guardando...';
+
+      const { error: errPos } = await supabase.from('juegos').update({
+        saldo_x: posGrupos.saldo_x, saldo_y: posGrupos.saldo_y,
+        apuesta_x: posGrupos.apuesta_x, apuesta_y: posGrupos.apuesta_y,
+        turbo_x: posGrupos.turbo_x, turbo_y: posGrupos.turbo_y,
+        fichas_x: posGrupos.fichas_x, fichas_y: posGrupos.fichas_y,
+        saldo_ancho: posGrupos.saldo_ancho, saldo_alto: posGrupos.saldo_alto,
+        apuesta_ancho: posGrupos.apuesta_ancho, apuesta_alto: posGrupos.apuesta_alto,
+        saldo_fondo_url: posGrupos.saldo_fondo_url,
+        apuesta_fondo_url: posGrupos.apuesta_fondo_url,
+        modo_apuesta: modoApuesta,
+        fichas,
+      }).eq('id', juego.id);
+
+      // Se guardan los cinco botones juntos, no solo el que estás
+      // editando: así no se pierde lo que ajustaste en los otros
+      // antes de cambiar de pestañita.
+      const { error: errBtn } = await supabase.from('botones').upsert(
+        CLAVES_BOTON.map(({ clave }) => ({
+          juego_id: juego.id, clave,
+          imagen_url: botones[clave].imagen_url,
+          tamano: botones[clave].tamano,
+          imagen_tamano: botones[clave].imagen_tamano,
+          sin_fondo: botones[clave].sin_fondo,
+        })),
+        { onConflict: 'juego_id,clave' }
+      );
+
+      const error = errPos || errBtn;
+      msgEl.textContent = error ? error.message : 'Guardado ✓';
+    });
+  }
+
+  const PALETA_LUCES = ['#EF9F27', '#D85A30', '#378ADD', '#639922', '#D4537E', '#7F77DD', '#F09595', '#5DCAA5'];
+
+  // Activa el arrastre de los focos de UNA cadena en modo libre —
+  // las demás quedan sin tocar (pointer-events:none), así no se
+  // arrastra por error un foco de otra cadena.
+  const activarArrastreCadena = (c) => {
+    desactivarArrastreLuces();
+    if (c.modo !== 'libre') return;
+    const wrap = cadenasLuzEl.querySelector(`[data-cadena="${c.id}"]`);
+    if (!wrap) return;
+    wrap.style.pointerEvents = 'auto';
+    (c._dots || []).forEach((dot, i) => {
+      dot.style.pointerEvents = 'auto';
+      dot.style.cursor = 'grab';
+      dot.addEventListener('pointerdown', (e) => {
+        dot.setPointerCapture(e.pointerId);
+        const mover = (ev) => {
+          const r = capElPv.getBoundingClientRect();
+          const escala = r.width / 420;
+          c.puntos[i] = {
+            x: Math.max(0, Math.min(100, (ev.clientX - r.left) / escala / 420 * 100)),
+            y: Math.max(0, Math.min(100, (ev.clientY - r.top) / escala / 860 * 100)),
+          };
+          dot.style.left = c.puntos[i].x + '%';
+          dot.style.top = c.puntos[i].y + '%';
+        };
+        dot.addEventListener('pointermove', mover);
+        dot.addEventListener('pointerup', () => dot.removeEventListener('pointermove', mover), { once: true });
+      });
+    });
+  };
+
+  // Sub-panel "Luces": lista de cadenas con chips (como Libres), cada
+  // una con su modo, cantidad, tamaño, animación, velocidad y
+  // colores. En modo libre, los focos se arrastran directo en la
+  // vista previa.
+  function pintarPanelLuces(container) {
+    container.innerHTML = `
+      <div style="display:flex; gap:4px; margin-bottom:10px; flex-wrap:wrap; align-items:center">
+        <div id="pz-chips" style="display:flex; gap:4px; flex-wrap:wrap; flex:1"></div>
+        <button id="pz-agregar" style="font-size:12px; white-space:nowrap">+ Agregar</button>
+      </div>
+      <div id="pz-editor"></div>
+    `;
+
+    const chipsEl = container.querySelector('#pz-chips');
+    chipsEl.innerHTML = cadenasLuces.map((c, i) => `
+      <button data-id="${c.id}" style="font-size:11px">Cadena ${i + 1}</button>
+    `).join('');
+    chipsEl.querySelectorAll('button').forEach((btn) => {
+      const activo = btn.dataset.id === cadenaActual;
+      btn.style.borderColor = activo ? 'var(--accent)' : 'var(--border)';
+      btn.style.color = activo ? 'var(--accent)' : 'var(--text)';
+      btn.addEventListener('click', () => { cadenaActual = btn.dataset.id; pintarPanelLuces(container); });
+    });
+
+    container.querySelector('#pz-agregar').addEventListener('click', async () => {
+      const { data, error } = await supabase.from('cadenas_luces')
+        .insert({ juego_id: juego.id, orden: cadenasLuces.length })
+        .select().single();
+      if (error) { alert(error.message); return; }
+      cadenasLuces.push(data);
+      cadenaActual = data.id;
+      reconstruirCadena(data);
+      pintarPanelLuces(container);
+    });
+
+    const actual = cadenasLuces.find((c) => c.id === cadenaActual);
+    const editorEl = container.querySelector('#pz-editor');
+    if (!actual) {
+      editorEl.innerHTML = '<p class="hint">Todavía no agregaste ninguna cadena.</p>';
+      desactivarArrastreLuces();
+      return;
+    }
+
+    // Valores por defecto en memoria: si todavía no corriste el SQL
+    // de formas, el panel igual se dibuja completo en vez de cortarse
+    // a la mitad por leer campos que no existen.
+    actual.forma = actual.forma || 'circulo';
+    actual.ancho = actual.ancho ?? actual.tamano ?? 11;
+    actual.alto = actual.alto ?? actual.tamano ?? 11;
+    if (!Array.isArray(actual.colores) || !actual.colores.length) actual.colores = ['#EF9F27', '#378ADD'];
+    if (!Array.isArray(actual.puntos)) actual.puntos = [];
+    actual.figura = actual.figura || 'rectangulo';
+    actual.figura_x = actual.figura_x ?? 50;
+    actual.figura_y = actual.figura_y ?? 50;
+    actual.figura_ancho = actual.figura_ancho ?? 60;
+    actual.figura_alto = actual.figura_alto ?? 30;
+    actual.figura_rotacion = actual.figura_rotacion ?? 0;
+    actual.glow = actual.glow ?? 14;
+    actual.nucleo = actual.nucleo ?? 45;
+    actual.apagado = actual.apagado ?? 18;
+    actual.vidrio = actual.vidrio ?? true;
+
+    editorEl.innerHTML = `
+      <label style="display:block; margin-bottom:8px; font-size:12px">Colocación
+        <select id="pz-modo" style="width:100%">
+          <option value="marco" ${actual.modo === 'marco' ? 'selected' : ''}>Seguir el marco</option>
+          <option value="figura" ${actual.modo === 'figura' ? 'selected' : ''}>Figura propia</option>
+          <option value="libre" ${actual.modo === 'libre' ? 'selected' : ''}>Libre (arrastrar en la vista previa)</option>
+        </select>
+      </label>
+      ${actual.modo === 'figura' ? `
+        <label style="display:block; margin-bottom:8px; font-size:12px">Figura
+          <select id="pz-figura" style="width:100%">
+            <option value="rectangulo" ${actual.figura === 'rectangulo' ? 'selected' : ''}>Rectángulo</option>
+            <option value="circulo" ${actual.figura === 'circulo' ? 'selected' : ''}>Círculo</option>
+            <option value="linea" ${actual.figura === 'linea' ? 'selected' : ''}>Línea</option>
+          </select>
+        </label>
+        <label style="display:block; margin-bottom:8px; font-size:12px">Posición X <span class="hint" id="pz-out-figura_x">${actual.figura_x}%</span>
+          <input type="range" min="0" max="100" value="${actual.figura_x}" data-campo="figura_x" />
+        </label>
+        <label style="display:block; margin-bottom:8px; font-size:12px">Posición Y <span class="hint" id="pz-out-figura_y">${actual.figura_y}%</span>
+          <input type="range" min="0" max="100" value="${actual.figura_y}" data-campo="figura_y" />
+        </label>
+        <label style="display:block; margin-bottom:8px; font-size:12px">Ancho de la figura <span class="hint" id="pz-out-figura_ancho">${actual.figura_ancho}%</span>
+          <input type="range" min="5" max="120" value="${actual.figura_ancho}" data-campo="figura_ancho" />
+        </label>
+        <label style="display:block; margin-bottom:8px; font-size:12px">Alto de la figura <span class="hint" id="pz-out-figura_alto">${actual.figura_alto}%</span>
+          <input type="range" min="0" max="100" value="${actual.figura_alto}" data-campo="figura_alto" />
+        </label>
+        <label style="display:block; margin-bottom:8px; font-size:12px">Rotación <span class="hint" id="pz-out-figura_rotacion">${actual.figura_rotacion}°</span>
+          <input type="range" min="-180" max="180" value="${actual.figura_rotacion}" data-campo="figura_rotacion" />
+        </label>
+      ` : ''}
+      <label style="display:block; margin-bottom:8px; font-size:12px">Cantidad de focos <span class="hint" id="pz-out-cantidad">${actual.cantidad}</span>
+        <input type="range" min="2" max="40" value="${actual.cantidad}" data-campo="cantidad" />
+      </label>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Forma del foco
+        <select id="pz-forma" style="width:100%">
+          <option value="circulo" ${(actual.forma || 'circulo') === 'circulo' ? 'selected' : ''}>Círculo</option>
+          <option value="cuadrado" ${actual.forma === 'cuadrado' ? 'selected' : ''}>Cuadrado</option>
+          <option value="rombo" ${actual.forma === 'rombo' ? 'selected' : ''}>Rombo</option>
+          <option value="barra" ${actual.forma === 'barra' ? 'selected' : ''}>Barra</option>
+        </select>
+      </label>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Ancho <span class="hint" id="pz-out-ancho">${actual.ancho ?? actual.tamano}px</span>
+        <input type="range" min="3" max="60" value="${actual.ancho ?? actual.tamano}" data-campo="ancho" />
+      </label>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Alto <span class="hint" id="pz-out-alto">${actual.alto ?? actual.tamano}px</span>
+        <input type="range" min="3" max="60" value="${actual.alto ?? actual.tamano}" data-campo="alto" />
+      </label>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Animación
+        <select id="pz-anim" style="width:100%">
+          <option value="secuencial" ${actual.animacion === 'secuencial' ? 'selected' : ''}>Secuencial (uno tras otro)</option>
+          <option value="sincronizado" ${actual.animacion === 'sincronizado' ? 'selected' : ''}>Todos juntos</option>
+          <option value="ola" ${actual.animacion === 'ola' ? 'selected' : ''}>Ola de color</option>
+          <option value="alternado" ${actual.animacion === 'alternado' ? 'selected' : ''}>Alternado (marquesina)</option>
+          <option value="aleatorio" ${actual.animacion === 'aleatorio' ? 'selected' : ''}>Parpadeo aleatorio</option>
+          <option value="vaiven" ${actual.animacion === 'vaiven' ? 'selected' : ''}>Vaivén (ida y vuelta)</option>
+        </select>
+      </label>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Velocidad <span class="hint" id="pz-out-velocidad">${actual.velocidad}x</span>
+        <input type="range" min="0.25" max="4" step="0.25" value="${actual.velocidad}" data-campo="velocidad" />
+      </label>
+      <p style="font-size:12px; color:var(--text-dim); margin:10px 0 6px">Aspecto del foco</p>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Resplandor <span class="hint" id="pz-out-glow">${actual.glow}px</span>
+        <input type="range" min="0" max="34" value="${actual.glow}" data-campo="glow" />
+      </label>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Núcleo blanco <span class="hint" id="pz-out-nucleo">${actual.nucleo}%</span>
+        <input type="range" min="0" max="80" value="${actual.nucleo}" data-campo="nucleo" />
+      </label>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Brillo apagado <span class="hint" id="pz-out-apagado">${actual.apagado}%</span>
+        <input type="range" min="0" max="60" value="${actual.apagado}" data-campo="apagado" />
+      </label>
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:10px">
+        <input type="checkbox" id="pz-vidrio" ${actual.vidrio ? 'checked' : ''} /> Reflejo de vidrio
+      </label>
+      <p style="font-size:12px; color:var(--text-dim); margin:10px 0 6px">Colores (1 a 8)</p>
+      <div id="pz-colores" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px"></div>
+      ${actual.modo === 'libre' ? '<p class="hint" style="margin:0 0 10px">Arrastrá cada foco directo en la vista previa para acomodar la cadena.</p>' : ''}
+      <button class="primary" id="pz-guardar" style="width:100%; margin-top:6px">Guardar</button>
+      <button id="pz-quitar" style="width:100%; margin-top:8px; color:var(--danger)">Quitar esta cadena</button>
+      <p id="pz-msg" class="hint"></p>
+    `;
+
+    const pintarColores = () => {
+      const cont = editorEl.querySelector('#pz-colores');
+      cont.innerHTML = actual.colores.map((col, i) => `
+        <button data-i="${i}" style="width:26px; height:26px; padding:0; border-radius:50%; background:${col}"></button>
+      `).join('') + (actual.colores.length < 8 ? '<button id="pz-agregar-color" style="width:26px; height:26px; padding:0; font-size:14px">+</button>' : '');
+      cont.querySelectorAll('[data-i]').forEach((b) => b.addEventListener('click', () => {
+        if (actual.colores.length > 1) { actual.colores.splice(Number(b.dataset.i), 1); pintarColores(); }
+      }));
+      cont.querySelector('#pz-agregar-color')?.addEventListener('click', () => {
+        const usado = PALETA_LUCES.findIndex((c) => !actual.colores.includes(c));
+        actual.colores.push(usado >= 0 ? PALETA_LUCES[usado] : PALETA_LUCES[actual.colores.length % PALETA_LUCES.length]);
+        pintarColores();
+      });
+    };
+    pintarColores();
+
+    reconstruirCadena(actual);
+    activarArrastreCadena(actual);
+
+    editorEl.querySelector('#pz-modo').addEventListener('change', (e) => {
+      actual.modo = e.target.value;
+      reconstruirCadena(actual);
+      activarArrastreCadena(actual);
+      pintarPanelLuces(container);
+    });
+    editorEl.querySelector('#pz-anim').addEventListener('change', (e) => { actual.animacion = e.target.value; });
+
+    editorEl.querySelector('#pz-vidrio').addEventListener('change', (e) => {
+      actual.vidrio = e.target.checked;
+      reconstruirCadena(actual);
+      activarArrastreCadena(actual);
+    });
+
+    editorEl.querySelector('#pz-figura')?.addEventListener('change', (e) => {
+      actual.figura = e.target.value;
+      reconstruirCadena(actual);
+    });
+
+    editorEl.querySelector('#pz-forma').addEventListener('change', (e) => {
+      actual.forma = e.target.value;
+      reconstruirCadena(actual);
+      activarArrastreCadena(actual);
+    });
+
+    editorEl.querySelectorAll('input[type="range"]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const campo = input.dataset.campo;
+        actual[campo] = Number(input.value);
+        const unidad = ['tamano', 'ancho', 'alto', 'glow'].includes(campo) ? 'px'
+          : ['nucleo', 'apagado'].includes(campo) ? '%'
+          : campo === 'velocidad' ? 'x'
+          : campo === 'figura_rotacion' ? '°'
+          : campo.startsWith('figura_') ? '%' : '';
+        const out = editorEl.querySelector(`#pz-out-${campo}`);
+        if (out) out.textContent = input.value + unidad;
+        if (['cantidad', 'tamano', 'ancho', 'alto'].includes(campo) || campo.startsWith('figura_')) {
+          reconstruirCadena(actual);
+          activarArrastreCadena(actual);
+        }
+      });
+    });
+
+    editorEl.querySelector('#pz-guardar').addEventListener('click', async () => {
+      const msgEl = editorEl.querySelector('#pz-msg');
+      msgEl.textContent = 'Guardando...';
+      const { error } = await supabase.from('cadenas_luces')
+        .update({
+          modo: actual.modo, cantidad: actual.cantidad, tamano: actual.tamano,
+          forma: actual.forma, ancho: actual.ancho, alto: actual.alto,
+          figura: actual.figura, figura_x: actual.figura_x, figura_y: actual.figura_y,
+          figura_ancho: actual.figura_ancho, figura_alto: actual.figura_alto,
+          figura_rotacion: actual.figura_rotacion,
+          glow: actual.glow, nucleo: actual.nucleo,
+          apagado: actual.apagado, vidrio: actual.vidrio,
+          animacion: actual.animacion, velocidad: actual.velocidad,
+          colores: actual.colores, puntos: actual.puntos,
+        })
+        .eq('id', actual.id);
+      msgEl.textContent = error
+        ? (/glow|nucleo|apagado|vidrio/.test(error.message)
+            ? 'Falta correr el SQL 25_focos_realistas.sql en Supabase.'
+          : /figura/.test(error.message)
+            ? 'Falta correr el SQL 24_figura_luces.sql en Supabase.'
+          : /forma|ancho|alto/.test(error.message)
+            ? 'Falta correr el SQL 23_formas_luces.sql en Supabase.'
+            : error.message)
+        : 'Guardado ✓';
+    });
+
+    editorEl.querySelector('#pz-quitar').addEventListener('click', async () => {
+      if (!confirm('¿Quitar esta cadena de luces?')) return;
+      await supabase.from('cadenas_luces').delete().eq('id', actual.id);
+      cadenasLuzEl.querySelector(`[data-cadena="${actual.id}"]`)?.remove();
+      cadenasLuces = cadenasLuces.filter((c) => c.id !== actual.id);
+      cadenaActual = cadenasLuces[0]?.id ?? null;
+      pintarPanelLuces(container);
     });
   }
 

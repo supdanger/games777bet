@@ -10,6 +10,7 @@
 // solo se juega.
 
 import './styles.css';
+import { ANCHO_ESC, ALTO_ESC, construirCadena, animarCadena } from './luces.js';
 
 const params = new URLSearchParams(location.search);
 const slug = params.get('slug');
@@ -36,10 +37,103 @@ async function arrancar() {
       fetchJson(`/api/jugar-datos?slug=${encodeURIComponent(slug)}`),
       fetchJson(`/api/jugar-balance?token=${encodeURIComponent(token)}`),
     ]);
+
+    // El juego se arma escondido detrás de la pantalla de carga y se
+    // revela recién cuando todo terminó de bajar. Si no, cada imagen
+    // aparece cuando puede y el jugador ve el juego armarse de a
+    // pedazos, que da sensación de cosa a medio hacer.
+    const pantalla = mostrarPantallaCarga(datos.juego);
     render(datos, balance.saldo);
+
+    const juegoEl = raiz.querySelector('#jg-escenario');
+    if (juegoEl) { juegoEl.style.opacity = '0'; juegoEl.style.transition = 'opacity .45s'; }
+    raiz.appendChild(pantalla.el);
+
+    await esperarRecursos(datos, pantalla.avance);
+
+    if (juegoEl) juegoEl.style.opacity = '1';
+    pantalla.el.style.opacity = '0';
+    setTimeout(() => pantalla.el.remove(), 400);
   } catch (err) {
     mostrarError(err.message || 'No se pudo cargar el juego.');
   }
+}
+
+// Pantalla de carga: imagen propia del juego si tiene, si no la
+// portada, y si tampoco hay, solo el nombre. Nunca queda en blanco.
+function mostrarPantallaCarga(juego) {
+  const imagen = juego.carga_url || juego.portada_url || null;
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed; inset:0; z-index:9999; background:#0b0e14;'
+    + 'display:flex; flex-direction:column; align-items:center; justify-content:center;'
+    + 'gap:16px; transition:opacity .35s;';
+  el.innerHTML = `
+    ${imagen ? `<img src="${imagen}" style="width:140px; height:140px; object-fit:contain; border-radius:12px" />` : ''}
+    <p style="font-size:14px; color:var(--text-dim); margin:0; letter-spacing:.08em">${escapeHtml(juego.nombre || '').toUpperCase()}</p>
+    <div style="width:160px; height:4px; border-radius:2px; background:#1c2433; overflow:hidden">
+      <div id="jg-carga-barra" style="width:0%; height:100%; background:var(--accent); transition:width .25s"></div>
+    </div>
+    <p id="jg-carga-pct" style="font-size:11px; color:var(--text-dim); margin:0">0%</p>
+  `;
+  const barra = el.querySelector('#jg-carga-barra');
+  const pctEl = el.querySelector('#jg-carga-pct');
+  return {
+    el,
+    avance: (hechos, total) => {
+      const p = total ? Math.round((hechos / total) * 100) : 100;
+      barra.style.width = p + '%';
+      pctEl.textContent = p + '%';
+    },
+  };
+}
+
+// Espera a que bajen imágenes Y sonidos. El progreso es real: cuenta
+// archivos terminados, no un temporizador.
+//
+// TOPE DE SEGURIDAD: pasados los 15 segundos entra igual. Un archivo
+// roto o un audio que nunca termina no puede dejar al jugador mirando
+// una pantalla de carga para siempre — mejor entrar con una imagen
+// faltante que no entrar nunca.
+function esperarRecursos(datos, avance) {
+  const { juego, simbolos, sonidos, digitos, capasLibres, botones } = datos;
+
+  const imagenes = [
+    juego.fondo_url, juego.fondo_pantalla_url, juego.marco_url, juego.cartel_url,
+    juego.girar_imagen_url, juego.saldo_fondo_url, juego.apuesta_fondo_url,
+    ...simbolos.map((s) => s.icono_url),
+    ...(digitos || []).map((d) => d.imagen_url),
+    ...(capasLibres || []).map((c) => c.imagen_url),
+    ...(botones || []).map((b) => b.imagen_url),
+  ].filter(Boolean);
+
+  const audios = (sonidos || []).map((s) => s.archivo_url).filter(Boolean);
+  const total = imagenes.length + audios.length;
+  if (!total) { avance(1, 1); return Promise.resolve(); }
+
+  let hechos = 0;
+  const marcar = () => { hechos++; avance(hechos, total); };
+
+  const tareas = [
+    ...imagenes.map((url) => new Promise((listo) => {
+      const img = new Image();
+      // onerror también resuelve: una imagen rota no debe trabar todo.
+      img.onload = img.onerror = () => { marcar(); listo(); };
+      img.src = url;
+    })),
+    ...audios.map((url) => new Promise((listo) => {
+      const a = new Audio();
+      const fin = () => { marcar(); listo(); };
+      a.addEventListener('canplaythrough', fin, { once: true });
+      a.addEventListener('error', fin, { once: true });
+      a.preload = 'auto';
+      a.src = url;
+    })),
+  ];
+
+  return Promise.race([
+    Promise.all(tareas),
+    new Promise((listo) => setTimeout(listo, 15000)),
+  ]);
 }
 
 function mostrarError(msg) {
@@ -93,7 +187,7 @@ function ordenPorDefecto(juego) {
 }
 
 function render(datos, saldoInicial) {
-  const { juego, simbolos, sonidos: sonidosData, efectos, premios, digitos, capasLibres } = datos;
+  const { juego, simbolos, sonidos: sonidosData, efectos, premios, digitos, capasLibres, cadenasLuces } = datos;
 
   const pos = conDefaults(juego);
   const ordenCapas = ordenPorDefecto(juego);
@@ -169,26 +263,36 @@ function render(datos, saldoInicial) {
 
         <div id="jg-capas-libres" style="position:absolute; inset:0; z-index:8; pointer-events:none"></div>
 
+        <div id="jg-cadenas-luces" style="position:absolute; inset:0; z-index:9; pointer-events:none"></div>
+
         <div id="jg-premio-popup" style="position:absolute; z-index:15; display:none; border-radius:12px; background:rgba(0,0,0,.55); transition:opacity .25s; opacity:0; transform:translate(-50%,-50%)">
           <img id="jg-img-premio" style="position:absolute; z-index:0; display:none" />
           <strong id="jg-premio-monto" style="position:absolute; z-index:1; font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5); white-space:nowrap"></strong>
         </div>
 
-        <div style="display:flex; align-items:flex-end; gap:10px; position:absolute; left:22px; right:22px; bottom:22px; z-index:10">
-          <div style="flex:1">
-            <p class="hint" style="margin:0">Saldo</p>
-            <strong id="jg-saldo" style="font-size:18px">${saldo.toLocaleString('es-PY')}</strong>
-          </div>
-          <div style="display:flex; align-items:center; gap:6px">
-            <button id="jg-apuesta-menos" aria-label="Bajar apuesta" style="width:28px; height:28px; padding:0">−</button>
-            <div style="text-align:center; min-width:66px">
-              <p class="hint" style="margin:0">Apuesta</p>
-              <strong id="jg-apuesta" style="font-size:15px"></strong>
-            </div>
-            <button id="jg-apuesta-mas" aria-label="Subir apuesta" style="width:28px; height:28px; padding:0">+</button>
-          </div>
-          <div id="jg-turbo" style="display:flex; gap:3px"></div>
+        <div id="jg-grupo-saldo" style="position:absolute; z-index:10; white-space:nowrap; display:flex; flex-direction:column; align-items:center; justify-content:center; background-size:100% 100%; background-repeat:no-repeat">
+          <p class="hint" style="margin:0">Saldo</p>
+          <strong id="jg-saldo" style="font-size:18px">${saldo.toLocaleString('es-PY')}</strong>
         </div>
+
+        <div id="jg-grupo-apuesta" style="position:absolute; z-index:10; display:flex; align-items:center; gap:6px; white-space:nowrap">
+          <button id="jg-apuesta-menos" aria-label="Bajar apuesta" style="padding:0; display:flex; align-items:center; justify-content:center; overflow:hidden">
+            <span class="jg-btn-texto">−</span>
+            <img class="jg-btn-img" style="display:none; object-fit:contain" />
+          </button>
+          <div id="jg-caja-apuesta" style="display:flex; flex-direction:column; align-items:center; justify-content:center; background-size:100% 100%; background-repeat:no-repeat">
+            <p class="hint" style="margin:0">Apuesta</p>
+            <strong id="jg-apuesta" style="font-size:15px"></strong>
+          </div>
+          <button id="jg-apuesta-mas" aria-label="Subir apuesta" style="padding:0; display:flex; align-items:center; justify-content:center; overflow:hidden">
+            <span class="jg-btn-texto">+</span>
+            <img class="jg-btn-img" style="display:none; object-fit:contain" />
+          </button>
+        </div>
+
+        <div id="jg-fichas" style="position:absolute; z-index:10; display:flex; gap:4px; flex-wrap:wrap; justify-content:center; white-space:nowrap"></div>
+
+        <div id="jg-turbo" style="position:absolute; z-index:10; display:flex; gap:3px; white-space:nowrap"></div>
 
         <button id="jg-girar" style="position:absolute; z-index:11; padding:0; display:flex; align-items:center; justify-content:center; border-radius:50%; overflow:hidden">
           <span id="jg-girar-texto" style="font-size:14px">Girar</span>
@@ -230,6 +334,7 @@ function render(datos, saldoInicial) {
   const imgPremio = raiz.querySelector('#jg-img-premio');
   const montoPremioEl = raiz.querySelector('#jg-premio-monto');
   const capasLibresEl = raiz.querySelector('#jg-capas-libres');
+  const cadenasLuzEl = raiz.querySelector('#jg-cadenas-luces');
   const cintas = [0, 1, 2].map((i) => raiz.querySelector(`#jg-cinta-${i}`));
   const efectoPremio = raiz.querySelector('#jg-efecto-premio');
   const btnGirar = raiz.querySelector('#jg-girar');
@@ -257,23 +362,117 @@ function render(datos, saldoInicial) {
   const pintarApuesta = () => { apuestaEl.textContent = apuesta.toLocaleString('es-PY'); };
   pintarApuesta();
 
+  // Posición de los tres grupos y aspecto de cada botón chico, tal
+  // como quedaron configurados en el ensamblador.
+  const cfgBotones = {};
+  ['menos', 'mas', 'x1', 'x2', 'x3'].forEach((clave) => {
+    const fila = (datos.botones || []).find((b) => b.clave === clave);
+    cfgBotones[clave] = {
+      imagen_url: fila?.imagen_url || null,
+      tamano: fila?.tamano ?? 28,
+      imagen_tamano: fila?.imagen_tamano ?? 70,
+      sin_fondo: fila?.sin_fondo ?? false,
+    };
+  });
+
+  const ubicarGrupo = (sel, x, y) => {
+    const el = raiz.querySelector(sel);
+    if (el) Object.assign(el.style, { left: x + '%', top: y + '%', transform: 'translate(-50%,-50%)' });
+  };
+  ubicarGrupo('#jg-grupo-saldo', juego.saldo_x ?? 14, juego.saldo_y ?? 96);
+  ubicarGrupo('#jg-grupo-apuesta', juego.apuesta_x ?? 50, juego.apuesta_y ?? 96);
+  ubicarGrupo('#jg-turbo', juego.turbo_x ?? 86, juego.turbo_y ?? 96);
+  ubicarGrupo('#jg-fichas', juego.fichas_x ?? 50, juego.fichas_y ?? 88);
+
+  // Recuadros de Saldo y Apuesta: la imagen va de fondo estirada al
+  // tamaño configurado, con el texto siempre encima y centrado.
+  const grupoSaldoEl = raiz.querySelector('#jg-grupo-saldo');
+  const cajaApuestaEl = raiz.querySelector('#jg-caja-apuesta');
+  Object.assign(grupoSaldoEl.style, {
+    width: (juego.saldo_ancho ?? 110) + 'px', height: (juego.saldo_alto ?? 44) + 'px',
+    backgroundImage: juego.saldo_fondo_url ? `url('${juego.saldo_fondo_url}')` : 'none',
+  });
+  Object.assign(cajaApuestaEl.style, {
+    width: (juego.apuesta_ancho ?? 110) + 'px', height: (juego.apuesta_alto ?? 44) + 'px',
+    backgroundImage: juego.apuesta_fondo_url ? `url('${juego.apuesta_fondo_url}')` : 'none',
+  });
+
+  // Modo de apuesta: qué controles se dibujan lo decide el
+  // ensamblador. El monto se valida igual en el servidor.
+  const modoApuesta = juego.modo_apuesta || 'mixto';
+  const fichasPorDefecto = [1, 2, 5, 20, 50].map((m) => apuestaMin * m).filter((f) => f <= apuestaMax);
+  const fichas = (juego.fichas?.length ? juego.fichas.map(Number) : fichasPorDefecto);
+  const fichasEl = raiz.querySelector('#jg-fichas');
+
+  const conFichas = modoApuesta === 'fichas' || modoApuesta === 'mixto';
+  const conMasMenos = modoApuesta === 'mas_menos' || modoApuesta === 'mixto';
+  fichasEl.style.display = conFichas ? 'flex' : 'none';
+  raiz.querySelector('#jg-apuesta-menos').style.display = conMasMenos ? 'flex' : 'none';
+  raiz.querySelector('#jg-apuesta-mas').style.display = conMasMenos ? 'flex' : 'none';
+
+  const pintarFichas = () => {
+    if (!conFichas) return;
+    fichasEl.innerHTML = fichas.map((f) => `
+      <button data-f="${f}" style="padding:3px 9px; font-size:11px; ${f === apuesta ? 'border-color:var(--accent); color:var(--accent)' : ''}">${Number(f).toLocaleString('es-PY')}</button>
+    `).join('');
+    fichasEl.querySelectorAll('button').forEach((b) => {
+      b.addEventListener('click', () => {
+        if (girando) return;
+        apuesta = Math.max(apuestaMin, Math.min(apuestaMax, Number(b.dataset.f)));
+        pintarApuesta();
+        pintarFichas();
+      });
+    });
+  };
+  pintarFichas();
+
+  const aplicarBoton = (el, cfg) => {
+    if (!el) return;
+    Object.assign(el.style, {
+      width: cfg.tamano + 'px', height: cfg.tamano + 'px',
+      background: cfg.sin_fondo ? 'transparent' : '',
+      border: cfg.sin_fondo ? 'none' : '',
+    });
+    const img = el.querySelector('.jg-btn-img');
+    const texto = el.querySelector('.jg-btn-texto');
+    if (cfg.imagen_url) {
+      const tam = cfg.tamano * cfg.imagen_tamano / 100;
+      img.src = cfg.imagen_url;
+      img.style.display = 'block';
+      img.style.width = tam + 'px';
+      img.style.height = tam + 'px';
+      if (texto) texto.style.display = 'none';
+    } else {
+      img.style.display = 'none';
+      if (texto) texto.style.display = 'block';
+    }
+  };
+  aplicarBoton(raiz.querySelector('#jg-apuesta-menos'), cfgBotones.menos);
+  aplicarBoton(raiz.querySelector('#jg-apuesta-mas'), cfgBotones.mas);
+
   raiz.querySelector('#jg-apuesta-mas').addEventListener('click', () => {
     if (girando) return;
     apuesta = Math.min(apuestaMax, apuesta + pasoApuesta);
     pintarApuesta();
+    pintarFichas();
   });
   raiz.querySelector('#jg-apuesta-menos').addEventListener('click', () => {
     if (girando) return;
     apuesta = Math.max(apuestaMin, apuesta - pasoApuesta);
     pintarApuesta();
+    pintarFichas();
   });
 
   const turboEl = raiz.querySelector('#jg-turbo');
   const pintarTurbo = () => {
     turboEl.innerHTML = [1, 2, 3].map((v) => `
-      <button data-v="${v}" style="padding:2px 7px; font-size:11px; ${v === velocidad ? 'border-color:var(--accent); color:var(--accent)' : ''}">x${v}</button>
+      <button data-v="${v}" style="padding:0; display:flex; align-items:center; justify-content:center; overflow:hidden; ${v === velocidad ? 'border-color:var(--accent); color:var(--accent)' : ''}">
+        <span class="jg-btn-texto" style="font-size:11px">x${v}</span>
+        <img class="jg-btn-img" style="display:none; object-fit:contain" />
+      </button>
     `).join('');
     turboEl.querySelectorAll('button').forEach((b) => {
+      aplicarBoton(b, cfgBotones['x' + b.dataset.v]);
       b.addEventListener('click', () => { velocidad = Number(b.dataset.v); pintarTurbo(); });
     });
   };
@@ -312,6 +511,42 @@ function render(datos, saldoInicial) {
       <img src="${c.imagen_url}" style="position:absolute; left:${c.x}%; top:${c.y}%; width:${c.tamano}%; height:auto; transform:translate(-50%,-50%) rotate(${c.angulo}deg); filter:${filtroCss(c.blur, c.oscurecer)}" />
     ` : '').join('');
   };
+
+  // ---------------- Cadenas de luces ----------------
+  // Solo se muestran: acá no se editan ni se arrastran, el jugador no
+  // configura nada. La geometría se calcula sobre la pantalla fija de
+  // 420x860, la misma que usa el ensamblador, así se ve idéntico.
+  // Cadenas de luces — geometría, formas y animación viven en
+  // src/luces.js, compartido con la otra pantalla.
+  const rectMarco = () => {
+    if (juego.marco_url) {
+      const w = pos.marco_ancho / 100 * ANCHO_ESC, h = pos.marco_alto / 100 * ALTO_ESC;
+      return { left: pos.marco_x / 100 * ANCHO_ESC - w / 2, top: pos.marco_y / 100 * ALTO_ESC - h / 2, w, h };
+    }
+    return { left: ANCHO_ESC * 0.1, top: ALTO_ESC * 0.1, w: ANCHO_ESC * 0.8, h: ALTO_ESC * 0.8 };
+  };
+
+  // Acá las luces solo se muestran: no se editan ni se arrastran.
+  const construirTodas = () => {
+    cadenasLuzEl.innerHTML = '';
+    (cadenasLuces || []).forEach((c) => {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'position:absolute; inset:0; pointer-events:none';
+      cadenasLuzEl.appendChild(wrap);
+      construirCadena(wrap, c, rectMarco);
+    });
+  };
+  construirTodas();
+
+  // Un solo intervalo para todas las cadenas, igual que en el
+  // ensamblador: no se crea un timer por cadena.
+  const t0Luces = Date.now();
+  if ((cadenasLuces || []).length) {
+    setInterval(() => {
+      const ahora = Date.now() - t0Luces;
+      cadenasLuces.forEach((c) => animarCadena(c, ahora));
+    }, 90);
+  }
 
   let montoDemoTexto = null;
   const aplicarPosicionPremio = (nivel) => {
