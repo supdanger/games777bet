@@ -169,7 +169,11 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   overlay.innerHTML = `
     <style>${cssEfectos}</style>
     <div style="display:flex; flex-direction:column; align-items:center">
-      <div style="display:flex; justify-content:space-between; margin-bottom:8px; gap:8px; width:420px">
+      <!-- position:relative + z-index: la pantalla del juego tiene
+           overflow visible a propósito (para ver si algo se pasa del
+           borde), así que cualquier capa que se salga por arriba
+           quedaba tapando estos botones e interceptando el clic. -->
+      <div style="display:flex; justify-content:space-between; margin-bottom:8px; gap:8px; width:420px; position:relative; z-index:50">
         <button id="pv-ajustar">⚙ Ajustar posición</button>
         <button id="pv-cerrar">✕ Cerrar prueba</button>
       </div>
@@ -235,7 +239,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
       </div>
     </div>
 
-    <div id="pv-panel-ajuste" class="card" style="display:none; width:260px; max-height:min(860px, 92vh); overflow:auto"></div>
+    <div id="pv-panel-ajuste" class="card" style="display:none; width:260px; max-height:min(860px, 92vh); overflow:auto; position:relative; z-index:50"></div>
   `;
 
   document.body.appendChild(overlay);
