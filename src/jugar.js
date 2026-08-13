@@ -577,16 +577,45 @@ function render(datos, saldoInicial) {
     if (montoDemoTexto !== null) pintarMonto(montoPremioEl, montoDemoTexto, p.monto_alto, p.monto_espaciado);
   };
 
+  // Dibuja el monto carácter por carácter. Reutiliza los elementos
+  // que ya están en pantalla en vez de borrarlos y crearlos de nuevo:
+  // con el contador corriendo esto se llama muchas veces por segundo,
+  // y recrear imágenes en cada paso trababa la pantalla.
   const pintarMonto = (elemento, texto, alto, espaciado) => {
     elemento.style.display = 'flex';
     elemento.style.alignItems = 'flex-end';
     elemento.style.flexWrap = 'nowrap';
     elemento.style.gap = espaciado + 'px';
-    elemento.innerHTML = [...texto].map((c) => {
+
+    const caracteres = [...texto];
+    const hijos = elemento.children;
+
+    caracteres.forEach((c, i) => {
       const url = mapaDigitos[c];
-      if (url) return `<img src="${url}" style="height:${alto}px; width:auto; display:block" />`;
-      return `<span style="font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5)">${escapeHtml(c)}</span>`;
-    }).join('');
+      const tipo = url ? 'IMG' : 'SPAN';
+      let el = hijos[i];
+
+      // Solo se crea un elemento nuevo si no había uno, o si cambió
+      // de tipo (de imagen a texto o al revés).
+      if (!el || el.tagName !== tipo) {
+        const nuevoEl = document.createElement(url ? 'img' : 'span');
+        if (el) elemento.replaceChild(nuevoEl, el);
+        else elemento.appendChild(nuevoEl);
+        el = nuevoEl;
+      }
+
+      if (url) {
+        if (el.getAttribute('src') !== url) el.setAttribute('src', url);
+        el.style.cssText = `height:${alto}px; width:auto; display:block`;
+      } else {
+        if (el.textContent !== c) el.textContent = c;
+        el.style.cssText = 'font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5)';
+      }
+    });
+
+    // Si el número se acortó (por ejemplo de 1.000 a 999), sobran
+    // elementos al final: se quitan.
+    while (hijos.length > caracteres.length) elemento.removeChild(elemento.lastChild);
   };
 
   let timerPremio = null;
@@ -604,9 +633,20 @@ function render(datos, saldoInicial) {
     cancelAnimationFrame(animContador);
     const duracion = Number(juego.contador_ms ?? 900);
 
+    const p = posPremio[nivel];
+    let ultimoTexto = null;
+
+    // Solo se redibuja el NÚMERO, y únicamente cuando cambia de
+    // verdad. Antes, cada cuadro del contador reasignaba la imagen
+    // del premio, recalculaba todos los estilos del cuadro y recreaba
+    // las imágenes de todos los dígitos — 60 veces por segundo. Eso
+    // trababa la pantalla justo en el momento de ganar.
     const pintar = (valor) => {
-      montoDemoTexto = '+' + Math.round(valor).toLocaleString('es-PY');
-      aplicarPosicionPremio(nivel);
+      const texto = '+' + Math.round(valor).toLocaleString('es-PY');
+      if (texto === ultimoTexto) return;
+      ultimoTexto = texto;
+      montoDemoTexto = texto;
+      pintarMonto(montoPremioEl, texto, p.monto_alto, p.monto_espaciado);
     };
 
     if (duracion <= 0) { pintar(monto); return; }
@@ -794,22 +834,43 @@ function render(datos, saldoInicial) {
     //  - No se vuelve a cero: se lee dónde está la cinta en este
     //    instante y se sigue desde ahí. El movimiento es siempre
     //    hacia adelante, nunca hay un salto para atrás.
-    const LARGO_BUCLE = RELLENO + 3;
-    cintas.forEach((cinta, col) => {
+    // El frenado recorre SIEMPRE la misma distancia corta, sin
+    // importar en qué punto del bucle estaba la cinta. Antes el
+    // destino era un índice fijo al final de la tira: como la cinta
+    // podía estar en cualquier parte, el tramo variaba y llegaba a
+    // ser más del doble de largo, así que en el mismo tiempo iba al
+    // doble de velocidad y se sentía pesado.
+    //
+    // Los 3 símbolos finales se ESCRIBEN en las celdas que ya
+    // existen en esa posición (no se agregan al final), así el
+    // rodillo no crece a cada giro.
+    const FRENADO = 14;
+    const destinos = cintas.map((cinta, col) => {
+      const celda = tamanoCelda[col];
       const y = posicionActual(cinta);
+      const k = Math.max(0, Math.min(RELLENO, Math.round(-y / celda)));
+      const indiceFinal = k + FRENADO;
+
       cinta.style.animation = 'none';
       cinta.style.transition = 'none';
       cinta.style.transform = `translateY(${y}px)`;
-      for (let i = 0; i < RELLENO; i++) cinta.appendChild(crearCeldaCinta(elegirSimboloFiller(total), tamanoCelda[col]));
-      grilla[col].forEach((sim) => cinta.appendChild(crearCeldaCinta(sim, tamanoCelda[col])));
+
+      // Alargar la tira solo lo justo para que entren los 3 finales.
+      while (cinta.children.length < indiceFinal + 3) {
+        cinta.appendChild(crearCeldaCinta(elegirSimboloFiller(total), celda));
+      }
+      // Y escribir el resultado en su lugar, sin recrear la celda.
+      grilla[col].forEach((sim, fila) => {
+        cinta.children[indiceFinal + fila].innerHTML = celdaHtml(sim);
+      });
+      return indiceFinal;
     });
-    const OFFSET_FINAL = LARGO_BUCLE + RELLENO;
     void cintas[0].offsetWidth;
 
     await Promise.all(cintas.map((cinta, col) => new Promise((resolve) => {
       const ms = Math.round(DURACION_COLUMNA[col] / velocidad);
       cinta.style.transition = `transform ${ms}ms cubic-bezier(0.15, 0.85, 0.3, 1)`;
-      cinta.style.transform = `translateY(-${OFFSET_FINAL * tamanoCelda[col]}px)`;
+      cinta.style.transform = `translateY(-${destinos[col] * tamanoCelda[col]}px)`;
       setTimeout(resolve, ms);
     })));
     cintas.forEach((cinta) => { cinta.style.willChange = 'auto'; });
@@ -819,8 +880,8 @@ function render(datos, saldoInicial) {
 
     if (premio > 0) {
       mostrarPremio(premio, nivel);
-      cintas.forEach((cinta) => {
-        const celdaGanadora = cinta.children[OFFSET_FINAL + 1];
+      cintas.forEach((cinta, col) => {
+        const celdaGanadora = cinta.children[destinos[col] + 1];
         if (celdaGanadora) celdaGanadora.classList.add('celda-ganadora');
       });
       const ef = efectos.find((e) => e.tipo === 'premio' && e.nivel_premio === nivel);

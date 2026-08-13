@@ -379,16 +379,45 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // subido lo muestra como imagen (sin deformar, alto fijo, ancho
   // automático); si no, cae en texto normal — así nunca falta un
   // carácter aunque todavía no hayas subido todos los íconos.
+  // Dibuja el monto carácter por carácter. Reutiliza los elementos
+  // que ya están en pantalla en vez de borrarlos y crearlos de nuevo:
+  // con el contador corriendo esto se llama muchas veces por segundo,
+  // y recrear imágenes en cada paso trababa la pantalla.
   const pintarMonto = (elemento, texto, alto, espaciado) => {
     elemento.style.display = 'flex';
     elemento.style.alignItems = 'flex-end';
     elemento.style.flexWrap = 'nowrap';
     elemento.style.gap = espaciado + 'px';
-    elemento.innerHTML = [...texto].map((c) => {
+
+    const caracteres = [...texto];
+    const hijos = elemento.children;
+
+    caracteres.forEach((c, i) => {
       const url = mapaDigitos[c];
-      if (url) return `<img src="${url}" style="height:${alto}px; width:auto; display:block" />`;
-      return `<span style="font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5)">${escapeHtml(c)}</span>`;
-    }).join('');
+      const tipo = url ? 'IMG' : 'SPAN';
+      let el = hijos[i];
+
+      // Solo se crea un elemento nuevo si no había uno, o si cambió
+      // de tipo (de imagen a texto o al revés).
+      if (!el || el.tagName !== tipo) {
+        const nuevoEl = document.createElement(url ? 'img' : 'span');
+        if (el) elemento.replaceChild(nuevoEl, el);
+        else elemento.appendChild(nuevoEl);
+        el = nuevoEl;
+      }
+
+      if (url) {
+        if (el.getAttribute('src') !== url) el.setAttribute('src', url);
+        el.style.cssText = `height:${alto}px; width:auto; display:block`;
+      } else {
+        if (el.textContent !== c) el.textContent = c;
+        el.style.cssText = 'font-size:20px; color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5)';
+      }
+    });
+
+    // Si el número se acortó (por ejemplo de 1.000 a 999), sobran
+    // elementos al final: se quitan.
+    while (hijos.length > caracteres.length) elemento.removeChild(elemento.lastChild);
   };
 
   // Blur + oscurecer, con filter: cada imagen puede tener su propio
@@ -785,9 +814,20 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     cancelAnimationFrame(animContador);
     const duracion = Number(juego.contador_ms ?? 900);
 
+    const p = posPremio[nivel];
+    let ultimoTexto = null;
+
+    // Solo se redibuja el NÚMERO, y únicamente cuando cambia de
+    // verdad. Antes, cada cuadro del contador reasignaba la imagen
+    // del premio, recalculaba todos los estilos del cuadro y recreaba
+    // las imágenes de todos los dígitos — 60 veces por segundo. Eso
+    // trababa la pantalla justo en el momento de ganar.
     const pintar = (valor) => {
-      montoDemoTexto = '+' + Math.round(valor).toLocaleString('es-PY');
-      aplicarPosicionPremio(nivel);
+      const texto = '+' + Math.round(valor).toLocaleString('es-PY');
+      if (texto === ultimoTexto) return;
+      ultimoTexto = texto;
+      montoDemoTexto = texto;
+      pintarMonto(montoPremioEl, texto, p.monto_alto, p.monto_espaciado);
     };
 
     if (duracion <= 0) { pintar(monto); return; }
