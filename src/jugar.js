@@ -237,10 +237,6 @@ function render(datos, saldoInicial) {
         pointer-events: none;
       }
       #app button, #app button * { pointer-events: auto; }
-      @keyframes jg-rodar {
-        from { transform: translateY(0); }
-        to   { transform: translateY(var(--jg-recorrido, -300px)); }
-      }
       ${cssEfectos}
     </style>
     <div id="jg-escenario" style="min-height:100vh; display:flex; align-items:center; justify-content:center; overflow:hidden">
@@ -686,9 +682,33 @@ function render(datos, saldoInicial) {
   aplicarFiltros();
   aplicarCapasLibres();
 
-  // ---------------- Animación de rodillos (solo muestra, nunca decide) ----------------
-  const RELLENO = 18;
-  const DURACION_COLUMNA = [1400, 1800, 2200];
+  // ================= MOTOR DE ANIMACIÓN DE RODILLOS =================
+  //
+  // Solo dibuja: el resultado lo decide el servidor y esta parte se
+  // limita a llevar visualmente los rodillos hasta ese resultado.
+  //
+  // Cómo funciona, y por qué así:
+  //
+  //  - Las celdas se crean UNA sola vez, al abrir el juego. Durante
+  //    el giro no se crea ni se borra ningún elemento: lo único que
+  //    cambia es el `src` de tres imágenes que en ese momento están
+  //    fuera de la vista. Antes se agregaban y reconstruían decenas
+  //    de celdas en pleno movimiento, y eso obligaba al navegador a
+  //    recalcular todo justo cuando menos podía.
+  //
+  //  - La posición la controla un solo bucle de requestAnimationFrame
+  //    con una variable en píxeles. Antes se mezclaba una animación
+  //    CSS infinita con una transición, y para pasar de una a otra
+  //    había que leer la posición con getComputedStyle: ese cruce era
+  //    el que producía los saltos y las "teletransportaciones".
+  //
+  //  - La cinta tiene LOOP celdas más una copia de las 3 primeras al
+  //    final, y la posición se toma en módulo. Así el giro puede
+  //    durar lo que haga falta sin que se note dónde vuelve a
+  //    empezar, y sin ir alargando la tira.
+  const LOOP = 20;
+  const CELDAS_TIRA = LOOP + 3;
+  const DURACION_BASE = [900, 1080, 1260];
 
   function elegirSimboloFiller(total) {
     let r = Math.random() * total;
@@ -696,22 +716,71 @@ function render(datos, saldoInicial) {
     return simbolos[simbolos.length - 1];
   }
 
-  function celdaHtml(s) {
-    if (s.icono_url) return `<img src="${s.icono_url}" style="width:60%; height:60%; object-fit:contain" />`;
-    return `<span style="font-size:11px; color:#8fae9a">${escapeHtml(s.nombre)}</span>`;
-  }
-
-  function crearCeldaCinta(simbolo, tamano) {
+  // Cada celda nace con su <img> y su <span> ya creados. Cambiar de
+  // símbolo es cambiar un `src` y una visibilidad — nunca crear
+  // elementos nuevos, que es lo caro.
+  function crearCelda(tamano) {
     const div = document.createElement('div');
     div.style.cssText = `width:${tamano}px; height:${tamano}px; display:flex; align-items:center; justify-content:center; flex-shrink:0`;
-    div.innerHTML = celdaHtml(simbolo);
+    const img = document.createElement('img');
+    img.style.cssText = 'width:60%; height:60%; object-fit:contain; display:none';
+    img.draggable = false;
+    const span = document.createElement('span');
+    span.style.cssText = 'font-size:11px; color:#8fae9a; display:none';
+    div.append(img, span);
     return div;
   }
 
-  // Al abrir, ya se ven símbolos en vez de rodillos vacíos. Es solo
-  // decorado: se descarta cualquier combinación que pagaría, para no
-  // mostrar un premio que el jugador no ganó. El resultado de verdad
-  // siempre viene del servidor, esto nunca lo toca.
+  function ponerSimbolo(celda, simbolo) {
+    const img = celda.firstElementChild;
+    const span = celda.lastElementChild;
+    if (simbolo.icono_url) {
+      if (img.getAttribute('src') !== simbolo.icono_url) img.src = simbolo.icono_url;
+      img.style.display = 'block';
+      span.style.display = 'none';
+    } else {
+      span.textContent = simbolo.nombre;
+      span.style.display = 'block';
+      img.style.display = 'none';
+    }
+  }
+
+  // Estado de cada rodillo. `y` es la distancia total recorrida en
+  // píxeles; lo que se dibuja es esa distancia en módulo del largo
+  // del bucle.
+  const rodillos = [0, 1, 2].map(() => ({
+    y: 0, v: 0, celdaPx: 0, loopPx: 0, celdas: [],
+    fase: 'quieto', destino: 0, salida: 0, distancia: 0, inicio: 0, duracion: 0,
+  }));
+
+  function medirYConstruir() {
+    const total = simbolos.reduce((a, s) => a + s.peso, 0) || 1;
+    cintas.forEach((cinta, col) => {
+      const r = rodillos[col];
+      const celdaPx = cinta.parentElement.clientWidth;
+      if (!celdaPx) return;
+      r.celdaPx = celdaPx;
+      r.loopPx = LOOP * celdaPx;
+      cinta.innerHTML = '';
+      r.celdas = [];
+      for (let i = 0; i < CELDAS_TIRA; i++) {
+        const celda = crearCelda(celdaPx);
+        cinta.appendChild(celda);
+        r.celdas.push(celda);
+      }
+      // Relleno inicial: las 3 últimas copian a las 3 primeras para
+      // que el punto de repetición sea invisible.
+      const tira = Array.from({ length: LOOP }, () => elegirSimboloFiller(total));
+      tira.forEach((sim, i) => ponerSimbolo(r.celdas[i], sim));
+      for (let i = 0; i < 3; i++) ponerSimbolo(r.celdas[LOOP + i], tira[i]);
+      cinta.style.transform = 'translate3d(0,0,0)';
+      cinta.style.backfaceVisibility = 'hidden';
+    });
+  }
+
+  // Al abrir ya se ven símbolos, pero nunca una combinación que
+  // pagaría: mostrar un premio que el jugador no ganó se lee como
+  // una estafa aunque sea solo decorado.
   function lineaPagaria(linea) {
     const reales = linea.filter((s) => s.nombre !== 'wild');
     const cand = reales.length ? reales[0] : linea[0];
@@ -720,50 +789,154 @@ function render(datos, saldoInicial) {
   }
 
   function pintarGrillaInicial() {
+    medirYConstruir();
     const total = simbolos.reduce((a, s) => a + s.peso, 0) || 1;
-    let grilla;
+    let grillaDemo;
     for (let intento = 0; intento < 40; intento++) {
-      grilla = [0, 1, 2].map(() => [0, 1, 2].map(() => elegirSimboloFiller(total)));
-      if (!lineaPagaria([grilla[0][1], grilla[1][1], grilla[2][1]])) break;
+      grillaDemo = [0, 1, 2].map(() => [0, 1, 2].map(() => elegirSimboloFiller(total)));
+      if (!lineaPagaria([grillaDemo[0][1], grillaDemo[1][1], grillaDemo[2][1]])) break;
     }
-    cintas.forEach((cinta, col) => {
-      cinta.innerHTML = '';
-      cinta.style.transition = 'none';
-      cinta.style.transform = 'translateY(0px)';
-      const tamanoCelda = cinta.parentElement.clientWidth;
-      grilla[col].forEach((s) => cinta.appendChild(crearCeldaCinta(s, tamanoCelda)));
+    rodillos.forEach((r, col) => {
+      if (!r.celdas.length) return;
+      grillaDemo[col].forEach((sim, fila) => ponerSimbolo(r.celdas[fila], sim));
+      r.y = 0;
+      cintas[col].style.transform = 'translate3d(0,0,0)';
     });
   }
   requestAnimationFrame(pintarGrillaInicial);
 
-  // Arma la cinta de arranque: solo relleno, sin resultado todavía.
-  // El giro empieza al toque, antes de que el servidor conteste — los
-  // 3 símbolos definitivos se enganchan después, cuando llega.
-  // La cinta de arranque tiene que poder girar en bucle SIN saltos:
-  // se arman RELLENO celdas y después se repiten las 3 primeras al
-  // final. Así, cuando la animación vuelve al principio, lo que se
-  // ve es idéntico a lo que había — antes la vuelta caía en celdas
-  // distintas y se veía un tironcito en cada repetición.
-  function armarCintaInicial(col, total) {
-    const cinta = cintas[col];
-    cinta.innerHTML = '';
-    cinta.style.transition = 'none';
-    cinta.style.transform = 'translateY(0px)';
-    cinta.style.willChange = 'transform';
-    const tamanoCelda = cinta.parentElement.clientWidth;
-    const simbolosTira = Array.from({ length: RELLENO }, () => elegirSimboloFiller(total));
-    simbolosTira.forEach((sim) => cinta.appendChild(crearCeldaCinta(sim, tamanoCelda)));
-    simbolosTira.slice(0, 3).forEach((sim) => cinta.appendChild(crearCeldaCinta(sim, tamanoCelda)));
-    return tamanoCelda;
+  // El bucle único: nada de leer el layout acá adentro, solo mover.
+  let ultimoFrame = 0;
+  function frameRodillos(ahora) {
+    const dt = ultimoFrame ? Math.min(50, ahora - ultimoFrame) : 16;
+    ultimoFrame = ahora;
+
+    rodillos.forEach((r, col) => {
+      if (r.fase === 'quieto' || !r.loopPx) return;
+
+      if (r.fase === 'acelerando' || r.fase === 'constante') {
+        const vMax = r.celdaPx / (55 / velocidad);
+        if (r.v < vMax) {
+          r.v = Math.min(vMax, r.v + (vMax / 260) * dt);
+        } else {
+          r.fase = 'constante';
+        }
+        r.y += r.v * dt;
+      } else if (r.fase === 'frenando') {
+        const t = Math.min(1, (ahora - r.inicio) / r.duracion);
+        // Desaceleración cúbica: arranca a la misma velocidad que
+        // traía (por eso la duración se calcula a partir de ella) y
+        // llega a cero justo en el destino. Sin saltos en el cruce.
+        r.y = r.salida + r.distancia * (1 - Math.pow(1 - t, 3));
+        if (t >= 1) {
+          r.y = r.destino;
+          r.v = 0;
+          r.fase = 'quieto';
+          cintas[col].style.willChange = 'auto';
+        }
+      }
+
+      const off = ((r.y % r.loopPx) + r.loopPx) % r.loopPx;
+      cintas[col].style.transform = `translate3d(0, ${-off}px, 0)`;
+    });
+
+    requestAnimationFrame(frameRodillos);
+  }
+  requestAnimationFrame(frameRodillos);
+
+  function arrancarRodillos() {
+    rodillos.forEach((r, col) => {
+      if (!r.loopPx) return;
+      r.fase = 'acelerando';
+      r.v = 0;
+      cintas[col].style.willChange = 'transform';
+    });
   }
 
-  // Dónde está la cinta AHORA mismo, en píxeles. Se lee del estilo
-  // que va calculando la animación, para poder seguir desde ese punto
-  // exacto en vez de volver a cero (que era el salto más visible).
-  function posicionActual(cinta) {
-    const m = new DOMMatrixReadOnly(getComputedStyle(cinta).transform);
-    return m.m42 || 0;
+  // Elige dónde escribir el resultado: una posición que en este
+  // instante esté fuera de la vista (la ventana muestra 3 celdas) y
+  // que no caiga en la zona de copias del final.
+  function ranuraLibre(r) {
+    const off = ((r.y % r.loopPx) + r.loopPx) % r.loopPx;
+    const k = Math.floor(off / r.celdaPx);
+    for (let d = 5; d < LOOP; d++) {
+      const cand = (k + d) % LOOP;
+      if (cand < 3 || cand > LOOP - 3) continue;
+      return cand;
+    }
+    return 3;
   }
+
+  // Frena hasta que las celdas del resultado queden exactamente en la
+  // ventana visible. La distancia se ajusta hacia arriba en vueltas
+  // enteras hasta caer justo en la ranura, así el final es exacto.
+  function frenarRodillo(col, simbolosFinales) {
+    const r = rodillos[col];
+    if (!r.loopPx) return 0;
+
+    const duracionDeseada = DURACION_BASE[col] / velocidad;
+    const vActual = Math.max(r.v, r.celdaPx / 400);
+
+    // Con desaceleración cúbica la velocidad de arranque es 3*d/D:
+    // de ahí sale la distancia que le corresponde a la velocidad que
+    // el rodillo ya traía. Respetarla es lo que evita el tirón al
+    // pasar de girar a frenar.
+    const distanciaIdeal = (vActual * duracionDeseada) / 3;
+
+    // Y ACÁ el orden importa: primero se calcula dónde caería el
+    // rodillo con esa distancia, y recién después se elige la ranura
+    // que queda justo ahí. Al revés (elegir la ranura primero y
+    // estirar la distancia hasta alcanzarla) había que sumar vueltas
+    // enteras, y el frenado terminaba durando entre uno y cinco
+    // segundos según dónde estuviera la cinta.
+    const off = ((r.y % r.loopPx) + r.loopPx) % r.loopPx;
+    const ranura = Math.round((off + distanciaIdeal) / r.celdaPx) % LOOP;
+
+    let delta = ranura * r.celdaPx - off;
+    // La distancia queda siempre pegada a la ideal: como mucho media
+    // celda de diferencia por el redondeo. Nunca se suma una vuelta
+    // entera para "alcanzar" la ranura, que era lo que hacía que un
+    // frenado durara un segundo y el siguiente cuatro.
+    if (delta < r.celdaPx) delta += r.loopPx;
+
+    // El resultado se escribe en la ranura. Las 3 últimas celdas de
+    // la tira son copia de las 3 primeras (es lo que hace invisible
+    // el punto donde el bucle vuelve a empezar), así que cuando el
+    // resultado toca esa zona hay que escribirlo en los dos lugares
+    // o el empalme mostraría símbolos distintos.
+    simbolosFinales.forEach((sim, fila) => {
+      const i = ranura + fila;
+      ponerSimbolo(r.celdas[i], sim);
+      if (i < 3) ponerSimbolo(r.celdas[LOOP + i], sim);
+      else if (i >= LOOP) ponerSimbolo(r.celdas[i - LOOP], sim);
+    });
+
+    r.salida = r.y;
+    r.distancia = delta;
+    r.destino = r.y + delta;
+    r.duracion = (3 * delta) / vActual;
+    r.inicio = performance.now();
+    r.fase = 'frenando';
+    return ranura;
+  }
+
+  function esperarFrenado() {
+    return new Promise((listo) => {
+      const revisar = () => {
+        if (rodillos.every((r) => r.fase === 'quieto')) listo();
+        else requestAnimationFrame(revisar);
+      };
+      requestAnimationFrame(revisar);
+    });
+  }
+
+  // Si cambia el tamaño de la pantalla hay que rehacer la medida de
+  // las celdas, pero nunca en pleno giro.
+  window.addEventListener('resize', () => {
+    if (girando) return;
+    pintarGrillaInicial();
+  });
+
 
   btnGirar.addEventListener('click', async () => {
     if (girando) return;
@@ -786,102 +959,55 @@ function render(datos, saldoInicial) {
     });
 
     // 2) Los rodillos arrancan en el mismo instante del toque y giran
-    // SIN PARAR hasta que llegue el resultado. Antes esta fase duraba
-    // 700ms fijos y terminaba: los rodillos quedaban quietos sobre
-    // relleno mientras se esperaba al servidor, y si en esa parada
-    // casual caían tres iguales, parecía un premio que nunca existió.
-    // Ahora nunca hay un frame en reposo antes del resultado real: la
-    // única vez que los rodillos frenan es sobre lo que dijo el
-    // servidor.
-    const tamanoCelda = [0, 1, 2].map((col) => armarCintaInicial(col, total));
-    void cintas[0].offsetWidth;
-    const arranque = Date.now();
-    const VUELTA_MS = Math.round(700 / velocidad);
-    cintas.forEach((cinta, col) => {
-      cinta.style.transition = 'none';
-      cinta.style.transform = 'translateY(0px)';
-      cinta.style.animation = `jg-rodar ${VUELTA_MS}ms linear infinite`;
-      cinta.style.setProperty('--jg-recorrido', `-${RELLENO * tamanoCelda[col]}px`);
+    // sin parar hasta que llegue el resultado. Nunca quedan quietos
+    // sobre relleno mientras se espera: si en una pausa casual
+    // cayeran tres iguales, parecería un premio que nunca existió.
+    rodillos.forEach((r) => {
+      r.celdas.forEach((celda) => celda.classList.remove('celda-ganadora'));
     });
+
+    const arranque = Date.now();
+    arrancarRodillos();
 
     // 3) Llega el resultado.
     let resultado;
     try {
       resultado = await pedido;
     } catch (err) {
-      cintas.forEach((cinta) => {
-        cinta.style.animation = 'none';
-        cinta.style.transition = 'none';
-        cinta.style.transform = 'translateY(0px)';
+      rodillos.forEach((r, col) => {
+        r.fase = 'quieto';
+        r.v = 0;
+        cintas[col].style.willChange = 'auto';
       });
       alert(err.message || 'No se pudo resolver el giro. Probá de nuevo.');
       girando = false;
       btnGirar.disabled = false;
       return;
     }
-    // Un mínimo de giro para que no parezca un corte seco cuando el
+
+    // Un mínimo de giro para que no se corte en seco cuando el
     // servidor contesta muy rápido.
-    const restante = VUELTA_MS - (Date.now() - arranque);
+    const restante = 450 / velocidad - (Date.now() - arranque);
     if (restante > 0) await new Promise((r) => setTimeout(r, restante));
 
     const { grilla, premio, nivel, saldo: saldoNuevo } = resultado;
 
-    // 4) Frenado. Dos cuidados para que no se note el corte:
-    //
-    //  - La cinta NO se reconstruye: se AGREGA tramo nuevo al final.
-    //    Antes se borraban y recreaban 63 celdas con imágenes en el
-    //    medio del giro, y en un celular eso es un tirón seguro.
-    //  - No se vuelve a cero: se lee dónde está la cinta en este
-    //    instante y se sigue desde ahí. El movimiento es siempre
-    //    hacia adelante, nunca hay un salto para atrás.
-    // El frenado recorre SIEMPRE la misma distancia corta, sin
-    // importar en qué punto del bucle estaba la cinta. Antes el
-    // destino era un índice fijo al final de la tira: como la cinta
-    // podía estar en cualquier parte, el tramo variaba y llegaba a
-    // ser más del doble de largo, así que en el mismo tiempo iba al
-    // doble de velocidad y se sentía pesado.
-    //
-    // Los 3 símbolos finales se ESCRIBEN en las celdas que ya
-    // existen en esa posición (no se agregan al final), así el
-    // rodillo no crece a cada giro.
-    const FRENADO = 14;
-    const destinos = cintas.map((cinta, col) => {
-      const celda = tamanoCelda[col];
-      const y = posicionActual(cinta);
-      const k = Math.max(0, Math.min(RELLENO, Math.round(-y / celda)));
-      const indiceFinal = k + FRENADO;
-
-      cinta.style.animation = 'none';
-      cinta.style.transition = 'none';
-      cinta.style.transform = `translateY(${y}px)`;
-
-      // Alargar la tira solo lo justo para que entren los 3 finales.
-      while (cinta.children.length < indiceFinal + 3) {
-        cinta.appendChild(crearCeldaCinta(elegirSimboloFiller(total), celda));
-      }
-      // Y escribir el resultado en su lugar, sin recrear la celda.
-      grilla[col].forEach((sim, fila) => {
-        cinta.children[indiceFinal + fila].innerHTML = celdaHtml(sim);
-      });
-      return indiceFinal;
-    });
-    void cintas[0].offsetWidth;
-
-    await Promise.all(cintas.map((cinta, col) => new Promise((resolve) => {
-      const ms = Math.round(DURACION_COLUMNA[col] / velocidad);
-      cinta.style.transition = `transform ${ms}ms cubic-bezier(0.15, 0.85, 0.3, 1)`;
-      cinta.style.transform = `translateY(-${destinos[col] * tamanoCelda[col]}px)`;
-      setTimeout(resolve, ms);
-    })));
-    cintas.forEach((cinta) => { cinta.style.willChange = 'auto'; });
+    // 4) Frenado. Los tres símbolos de cada rodillo se escriben en
+    // celdas que en ese momento están fuera de la vista (solo cambia
+    // un `src` ya precargado, no se crea ni se borra nada), y después
+    // el rodillo recorre físicamente la distancia que falta hasta
+    // ellos, desacelerando. El destino sale del resultado del
+    // servidor y de ningún otro lado.
+    const ranuras = [0, 1, 2].map((col) => frenarRodillo(col, grilla[col]));
+    await esperarFrenado();
 
     saldo = Number(saldoNuevo);
     saldoEl.textContent = saldo.toLocaleString('es-PY');
 
     if (premio > 0) {
       mostrarPremio(premio, nivel);
-      cintas.forEach((cinta, col) => {
-        const celdaGanadora = cinta.children[destinos[col] + 1];
+      rodillos.forEach((r, col) => {
+        const celdaGanadora = r.celdas[ranuras[col] + 1];
         if (celdaGanadora) celdaGanadora.classList.add('celda-ganadora');
       });
       const ef = efectos.find((e) => e.tipo === 'premio' && e.nivel_premio === nivel);
