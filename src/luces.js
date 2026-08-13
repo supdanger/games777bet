@@ -202,3 +202,32 @@ export function animarCadena(c, ahora) {
     pintarFoco(dot, colores[i % colores.length], encendido, c);
   });
 }
+
+// ---------------- Bucle de animación ----------------
+// Un solo bucle para TODAS las cadenas, con requestAnimationFrame en
+// vez de setInterval: así el navegador lo sincroniza con el repintado
+// de pantalla en lugar de interrumpir en cualquier momento. Eso
+// importa sobre todo en celulares, donde el resplandor de los focos
+// compitiendo con el giro de los rodillos se notaba como tironcitos.
+//
+// Se limita a ~11 cuadros por segundo a propósito: las luces no
+// necesitan más y así le dejan el resto del tiempo a la animación de
+// los rodillos, que sí necesita ir fluida.
+export function iniciarAnimacionLuces(obtenerCadenas) {
+  const t0 = Date.now();
+  let ultimo = 0;
+  let vivo = true;
+
+  const paso = () => {
+    if (!vivo) return;
+    const ahora = Date.now();
+    if (ahora - ultimo >= 90) {
+      ultimo = ahora;
+      obtenerCadenas().forEach((c) => animarCadena(c, ahora - t0));
+    }
+    requestAnimationFrame(paso);
+  };
+  requestAnimationFrame(paso);
+
+  return () => { vivo = false; };
+}

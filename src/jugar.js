@@ -10,7 +10,7 @@
 // solo se juega.
 
 import './styles.css';
-import { ANCHO_ESC, ALTO_ESC, construirCadena, animarCadena } from './luces.js';
+import { ANCHO_ESC, ALTO_ESC, construirCadena, iniciarAnimacionLuces } from './luces.js';
 import { mostrarTablaPagos } from './tabla-pagos.js';
 
 const params = new URLSearchParams(location.search);
@@ -551,13 +551,7 @@ function render(datos, saldoInicial) {
 
   // Un solo intervalo para todas las cadenas, igual que en el
   // ensamblador: no se crea un timer por cadena.
-  const t0Luces = Date.now();
-  if ((cadenasLuces || []).length) {
-    setInterval(() => {
-      const ahora = Date.now() - t0Luces;
-      cadenasLuces.forEach((c) => animarCadena(c, ahora));
-    }, 90);
-  }
+  if ((cadenasLuces || []).length) iniciarAnimacionLuces(() => cadenasLuces);
 
   let montoDemoTexto = null;
   const aplicarPosicionPremio = (nivel) => {
@@ -668,14 +662,30 @@ function render(datos, saldoInicial) {
   // Arma la cinta de arranque: solo relleno, sin resultado todavía.
   // El giro empieza al toque, antes de que el servidor conteste — los
   // 3 símbolos definitivos se enganchan después, cuando llega.
+  // La cinta de arranque tiene que poder girar en bucle SIN saltos:
+  // se arman RELLENO celdas y después se repiten las 3 primeras al
+  // final. Así, cuando la animación vuelve al principio, lo que se
+  // ve es idéntico a lo que había — antes la vuelta caía en celdas
+  // distintas y se veía un tironcito en cada repetición.
   function armarCintaInicial(col, total) {
     const cinta = cintas[col];
     cinta.innerHTML = '';
     cinta.style.transition = 'none';
     cinta.style.transform = 'translateY(0px)';
+    cinta.style.willChange = 'transform';
     const tamanoCelda = cinta.parentElement.clientWidth;
-    for (let i = 0; i < RELLENO; i++) cinta.appendChild(crearCeldaCinta(elegirSimboloFiller(total), tamanoCelda));
+    const simbolosTira = Array.from({ length: RELLENO }, () => elegirSimboloFiller(total));
+    simbolosTira.forEach((sim) => cinta.appendChild(crearCeldaCinta(sim, tamanoCelda)));
+    simbolosTira.slice(0, 3).forEach((sim) => cinta.appendChild(crearCeldaCinta(sim, tamanoCelda)));
     return tamanoCelda;
+  }
+
+  // Dónde está la cinta AHORA mismo, en píxeles. Se lee del estilo
+  // que va calculando la animación, para poder seguir desde ese punto
+  // exacto en vez de volver a cero (que era el salto más visible).
+  function posicionActual(cinta) {
+    const m = new DOMMatrixReadOnly(getComputedStyle(cinta).transform);
+    return m.m42 || 0;
   }
 
   btnGirar.addEventListener('click', async () => {
@@ -714,7 +724,7 @@ function render(datos, saldoInicial) {
       cinta.style.transition = 'none';
       cinta.style.transform = 'translateY(0px)';
       cinta.style.animation = `jg-rodar ${VUELTA_MS}ms linear infinite`;
-      cinta.style.setProperty('--jg-recorrido', `-${(RELLENO - 3) * tamanoCelda[col]}px`);
+      cinta.style.setProperty('--jg-recorrido', `-${RELLENO * tamanoCelda[col]}px`);
     });
 
     // 3) Llega el resultado.
@@ -739,18 +749,24 @@ function render(datos, saldoInicial) {
 
     const { grilla, premio, nivel, saldo: saldoNuevo } = resultado;
 
-    // 4) Se corta el giro continuo y se arma la cinta final: relleno
-    // + los 3 definitivos. El salto al reiniciar la posición no se
-    // nota porque los rodillos vienen a toda velocidad.
+    // 4) Frenado. Dos cuidados para que no se note el corte:
+    //
+    //  - La cinta NO se reconstruye: se AGREGA tramo nuevo al final.
+    //    Antes se borraban y recreaban 63 celdas con imágenes en el
+    //    medio del giro, y en un celular eso es un tirón seguro.
+    //  - No se vuelve a cero: se lee dónde está la cinta en este
+    //    instante y se sigue desde ahí. El movimiento es siempre
+    //    hacia adelante, nunca hay un salto para atrás.
+    const LARGO_BUCLE = RELLENO + 3;
     cintas.forEach((cinta, col) => {
+      const y = posicionActual(cinta);
       cinta.style.animation = 'none';
       cinta.style.transition = 'none';
-      cinta.style.transform = 'translateY(0px)';
-      cinta.innerHTML = '';
+      cinta.style.transform = `translateY(${y}px)`;
       for (let i = 0; i < RELLENO; i++) cinta.appendChild(crearCeldaCinta(elegirSimboloFiller(total), tamanoCelda[col]));
-      grilla[col].forEach((s) => cinta.appendChild(crearCeldaCinta(s, tamanoCelda[col])));
+      grilla[col].forEach((sim) => cinta.appendChild(crearCeldaCinta(sim, tamanoCelda[col])));
     });
-    const OFFSET_FINAL = RELLENO;
+    const OFFSET_FINAL = LARGO_BUCLE + RELLENO;
     void cintas[0].offsetWidth;
 
     await Promise.all(cintas.map((cinta, col) => new Promise((resolve) => {
@@ -759,6 +775,7 @@ function render(datos, saldoInicial) {
       cinta.style.transform = `translateY(-${OFFSET_FINAL * tamanoCelda[col]}px)`;
       setTimeout(resolve, ms);
     })));
+    cintas.forEach((cinta) => { cinta.style.willChange = 'auto'; });
 
     saldo = Number(saldoNuevo);
     saldoEl.textContent = saldo.toLocaleString('es-PY');

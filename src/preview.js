@@ -9,7 +9,7 @@
 
 import { supabase } from './supabase.js';
 import { girar, elegirSimbolo } from '../motor/clasico-3x3.js';
-import { ANCHO_ESC, ALTO_ESC, construirCadena, animarCadena } from './luces.js';
+import { ANCHO_ESC, ALTO_ESC, construirCadena, iniciarAnimacionLuces } from './luces.js';
 import { mostrarTablaPagos } from './tabla-pagos.js';
 
 function celdaHtml(s) {
@@ -334,11 +334,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
 
   // Un solo intervalo anima TODAS las cadenas — nunca uno por cadena,
   // para no ir sumando timers sueltos si se agregan varias.
-  const t0Animacion = Date.now();
-  const timerCadenas = setInterval(() => {
-    const ahora = Date.now() - t0Animacion;
-    cadenasLuces.forEach((c) => animarCadena(c, ahora));
-  }, 90);
+  const timerCadenas = iniciarAnimacionLuces(() => cadenasLuces);
 
   // Saca el modo arrastre de todos los focos al salir de la pestaña
   // Luces — si no, quedarían tocables encima del resto del juego.
@@ -765,7 +761,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   };
   pintarTurbo();
 
-  const cerrar = () => { Object.values(audios).forEach((a) => a.pause()); clearInterval(timerCadenas); overlay.remove(); };
+  const cerrar = () => { Object.values(audios).forEach((a) => a.pause()); timerCadenas(); overlay.remove(); };
   overlay.querySelector('#pv-cerrar').addEventListener('click', cerrar);
 
   overlay.querySelector('#pv-info').addEventListener('click', () => mostrarTablaPagos(overlay, simbolos, juego));
@@ -1585,6 +1581,9 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     cinta.innerHTML = '';
     cinta.style.transition = 'none';
     cinta.style.transform = 'translateY(0px)';
+    // Le avisa al navegador que esto se va a mover, para que lo
+    // maneje la placa de video en vez del procesador.
+    cinta.style.willChange = 'transform';
 
     const tamanoCelda = cinta.parentElement.clientWidth;
 
