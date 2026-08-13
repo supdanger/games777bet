@@ -610,6 +610,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
 
   let modoApuesta = juego.modo_apuesta || 'mixto';
   let mostrarNombre = juego.mostrar_nombre ?? true;
+  let contadorMs = juego.contador_ms ?? 900;
   // Sin fichas configuradas, se arman solas a partir del mínimo para
   // que la pantalla nunca quede sin opciones que tocar.
   const fichasPorDefecto = [1, 2, 5, 20, 50].map((m) => apuestaMin * m).filter((f) => f <= apuestaMax);
@@ -770,16 +771,53 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // nivel que ganó, y se esconde solo a los pocos segundos (o si
   // arranca un giro nuevo antes).
   let timerPremio = null;
+  let animContador = null;
+
+  // El monto sube desde cero hasta el total en vez de aparecer de
+  // golpe. No cambia nada del resultado: el número final es el que
+  // decidió el servidor, solo se muestra progresivamente.
+  //
+  // La curva desacelera al final (empieza rápido y frena), que es lo
+  // que hace que se sienta como un premio "cerrando" y no como un
+  // número corriendo. Con contador_ms en 0 aparece directo, como
+  // antes.
+  function contarHasta(monto, nivel) {
+    cancelAnimationFrame(animContador);
+    const duracion = Number(juego.contador_ms ?? 900);
+
+    const pintar = (valor) => {
+      montoDemoTexto = '+' + Math.round(valor).toLocaleString('es-PY');
+      aplicarPosicionPremio(nivel);
+    };
+
+    if (duracion <= 0) { pintar(monto); return; }
+
+    const inicio = performance.now();
+    const paso = (ahora) => {
+      const t = Math.min(1, (ahora - inicio) / duracion);
+      // Desaceleración: rápido al principio, suave al final.
+      const suave = 1 - Math.pow(1 - t, 3);
+      pintar(monto * suave);
+      if (t < 1) animContador = requestAnimationFrame(paso);
+      else pintar(monto);
+    };
+    animContador = requestAnimationFrame(paso);
+  }
+
   function mostrarPremio(monto, nivel) {
     clearTimeout(timerPremio);
-    montoDemoTexto = '+' + monto.toLocaleString('es-PY');
+    montoDemoTexto = '+0';
     aplicarPosicionPremio(nivel);
     premioPopupEl.style.display = 'flex';
     void premioPopupEl.offsetWidth;
     premioPopupEl.style.opacity = '1';
-    timerPremio = setTimeout(ocultarPremio, 2500);
+    contarHasta(monto, nivel);
+    // El cuadro queda un momento con el monto final ya quieto: si se
+    // fuera apenas termina de contar, no daría tiempo a leerlo.
+    timerPremio = setTimeout(ocultarPremio, Number(juego.contador_ms ?? 900) + 2000);
   }
   function ocultarPremio() {
+    cancelAnimationFrame(animContador);
     premioPopupEl.style.opacity = '0';
     setTimeout(() => { premioPopupEl.style.display = 'none'; }, 250);
   }
@@ -1010,6 +1048,9 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
       <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:12px">
         <input type="checkbox" id="pc-nombre" ${mostrarNombre ? 'checked' : ''} /> Mostrar el nombre del juego arriba
       </label>
+      <label style="display:block; margin-bottom:12px; font-size:12px">Contador del premio <span class="hint" id="pc-out-contador">${contadorMs === 0 ? 'directo' : contadorMs + 'ms'}</span>
+        <input type="range" min="0" max="3000" step="100" value="${contadorMs}" id="pc-contador" />
+      </label>
       <p style="font-size:12px; color:var(--text-dim); margin:0 0 8px">Modo de apuesta</p>
       <select id="pc-modo" style="width:100%; margin-bottom:6px">
         <option value="fichas" ${modoApuesta === 'fichas' ? 'selected' : ''}>Solo fichas</option>
@@ -1097,6 +1138,12 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
       pintarTurbo();
     });
 
+    container.querySelector('#pc-contador').addEventListener('input', (e) => {
+      contadorMs = Number(e.target.value);
+      juego.contador_ms = contadorMs;
+      container.querySelector('#pc-out-contador').textContent = contadorMs === 0 ? 'directo' : contadorMs + 'ms';
+    });
+
     container.querySelector('#pc-nombre').addEventListener('change', (e) => {
       mostrarNombre = e.target.checked;
       const tituloEl = overlay.querySelector('#pv-titulo-juego');
@@ -1165,6 +1212,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
         apuesta_fondo_url: posGrupos.apuesta_fondo_url,
         modo_apuesta: modoApuesta,
         mostrar_nombre: mostrarNombre,
+        contador_ms: contadorMs,
         fichas,
       }).eq('id', juego.id);
 

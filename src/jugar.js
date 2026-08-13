@@ -590,16 +590,53 @@ function render(datos, saldoInicial) {
   };
 
   let timerPremio = null;
+  let animContador = null;
+
+  // El monto sube desde cero hasta el total en vez de aparecer de
+  // golpe. No cambia nada del resultado: el número final es el que
+  // decidió el servidor, solo se muestra progresivamente.
+  //
+  // La curva desacelera al final (empieza rápido y frena), que es lo
+  // que hace que se sienta como un premio "cerrando" y no como un
+  // número corriendo. Con contador_ms en 0 aparece directo, como
+  // antes.
+  function contarHasta(monto, nivel) {
+    cancelAnimationFrame(animContador);
+    const duracion = Number(juego.contador_ms ?? 900);
+
+    const pintar = (valor) => {
+      montoDemoTexto = '+' + Math.round(valor).toLocaleString('es-PY');
+      aplicarPosicionPremio(nivel);
+    };
+
+    if (duracion <= 0) { pintar(monto); return; }
+
+    const inicio = performance.now();
+    const paso = (ahora) => {
+      const t = Math.min(1, (ahora - inicio) / duracion);
+      // Desaceleración: rápido al principio, suave al final.
+      const suave = 1 - Math.pow(1 - t, 3);
+      pintar(monto * suave);
+      if (t < 1) animContador = requestAnimationFrame(paso);
+      else pintar(monto);
+    };
+    animContador = requestAnimationFrame(paso);
+  }
+
   function mostrarPremio(monto, nivel) {
     clearTimeout(timerPremio);
-    montoDemoTexto = '+' + monto.toLocaleString('es-PY');
+    montoDemoTexto = '+0';
     aplicarPosicionPremio(nivel);
     premioPopupEl.style.display = 'flex';
     void premioPopupEl.offsetWidth;
     premioPopupEl.style.opacity = '1';
-    timerPremio = setTimeout(ocultarPremio, 2500);
+    contarHasta(monto, nivel);
+    // El cuadro queda un momento con el monto final ya quieto: si se
+    // fuera apenas termina de contar, no daría tiempo a leerlo.
+    timerPremio = setTimeout(ocultarPremio, Number(juego.contador_ms ?? 900) + 2000);
   }
   function ocultarPremio() {
+    cancelAnimationFrame(animContador);
     premioPopupEl.style.opacity = '0';
     setTimeout(() => { premioPopupEl.style.display = 'none'; }, 250);
   }
