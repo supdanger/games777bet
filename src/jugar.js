@@ -708,7 +708,11 @@ function render(datos, saldoInicial) {
   //    empezar, y sin ir alargando la tira.
   const LOOP = 20;
   const CELDAS_TIRA = LOOP + 3;
-  const DURACION_BASE = [900, 1080, 1260];
+  const DURACION_BASE = [1100, 1320, 1540];
+  // Cuánto se pasa el rodillo del punto final antes de acomodarse.
+  // Es chico a propósito: lo justo para que se sienta que algo con
+  // peso frenó, no un rebote de dibujo animado.
+  const PASADA = 0.11;
 
   function elegirSimboloFiller(total) {
     let r = Math.random() * total;
@@ -750,7 +754,7 @@ function render(datos, saldoInicial) {
   // del bucle.
   const rodillos = [0, 1, 2].map(() => ({
     y: 0, v: 0, celdaPx: 0, loopPx: 0, celdas: [],
-    fase: 'quieto', destino: 0, salida: 0, distancia: 0, inicio: 0, duracion: 0,
+    fase: 'quieto', destino: 0, salida: 0, distancia: 0, inicio: 0, duracion: 0, pasada: 0,
   }));
 
   function medirYConstruir() {
@@ -824,10 +828,24 @@ function render(datos, saldoInicial) {
         r.y += r.v * dt;
       } else if (r.fase === 'frenando') {
         const t = Math.min(1, (ahora - r.inicio) / r.duracion);
-        // Desaceleración cúbica: arranca a la misma velocidad que
-        // traía (por eso la duración se calcula a partir de ella) y
-        // llega a cero justo en el destino. Sin saltos en el cruce.
-        r.y = r.salida + r.distancia * (1 - Math.pow(1 - t, 3));
+        // Curva cuadrática, no cúbica. La cúbica frena de golpe al
+        // principio y después se arrastra: con la misma duración
+        // recorría apenas 5 celdas, así que entraban 3 símbolos a la
+        // vista y ya estaba parado — de ahí la sensación de que el
+        // resultado aparecía de la nada. La cuadrática reparte mejor
+        // y deja ver el doble de símbolos llegando.
+        r.y = r.salida + r.distancia * (1 - Math.pow(1 - t, 2));
+        if (t >= 1) {
+          r.fase = 'asentando';
+          r.inicio = ahora;
+        }
+      } else if (r.fase === 'asentando') {
+        // El rodillo se pasó un poquito y vuelve a su lugar. Es lo que
+        // hace que se sienta un objeto con peso deteniéndose, en vez
+        // de una animación que simplemente termina.
+        const t = Math.min(1, (ahora - r.inicio) / 170);
+        const suave = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        r.y = r.pasada + (r.destino - r.pasada) * suave;
         if (t >= 1) {
           r.y = r.destino;
           r.v = 0;
@@ -877,11 +895,11 @@ function render(datos, saldoInicial) {
     const duracionDeseada = DURACION_BASE[col] / velocidad;
     const vActual = Math.max(r.v, r.celdaPx / 400);
 
-    // Con desaceleración cúbica la velocidad de arranque es 3*d/D:
-    // de ahí sale la distancia que le corresponde a la velocidad que
-    // el rodillo ya traía. Respetarla es lo que evita el tirón al
-    // pasar de girar a frenar.
-    const distanciaIdeal = (vActual * duracionDeseada) / 3;
+    // Con la curva cuadrática la velocidad de arranque es 2*d/D: de
+    // ahí sale la distancia que le corresponde a la velocidad que el
+    // rodillo ya traía. Respetarla es lo que evita el tirón al pasar
+    // de girar a frenar.
+    const distanciaIdeal = (vActual * duracionDeseada) / 2;
 
     // Y ACÁ el orden importa: primero se calcula dónde caería el
     // rodillo con esa distancia, y recién después se elige la ranura
@@ -911,10 +929,12 @@ function render(datos, saldoInicial) {
       else if (i >= LOOP) ponerSimbolo(r.celdas[i - LOOP], sim);
     });
 
+    const pasadaPx = r.celdaPx * PASADA;
     r.salida = r.y;
-    r.distancia = delta;
+    r.distancia = delta + pasadaPx;
     r.destino = r.y + delta;
-    r.duracion = (3 * delta) / vActual;
+    r.pasada = r.destino + pasadaPx;
+    r.duracion = (2 * (delta + pasadaPx)) / vActual;
     r.inicio = performance.now();
     r.fase = 'frenando';
     return ranura;
@@ -987,7 +1007,10 @@ function render(datos, saldoInicial) {
 
     // Un mínimo de giro para que no se corte en seco cuando el
     // servidor contesta muy rápido.
-    const restante = 450 / velocidad - (Date.now() - arranque);
+    // Un mínimo de giro parejo antes de empezar a frenar: si el
+    // servidor contesta enseguida, sin esto el rodillo arrancaría y
+    // frenaría casi en el mismo movimiento.
+    const restante = 750 / velocidad - (Date.now() - arranque);
     if (restante > 0) await new Promise((r) => setTimeout(r, restante));
 
     const { grilla, premio, nivel, saldo: saldoNuevo } = resultado;
