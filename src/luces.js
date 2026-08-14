@@ -110,7 +110,7 @@ export function construirCadena(wrap, c, rectMarco) {
     dot.style.cssText = `position:absolute; left:${p.x / ANCHO_ESC * 100}%; top:${p.y / ALTO_ESC * 100}%;`
       + `width:${f.ancho}px; height:${f.alto}px; border-radius:${f.radio};`
       + `transform:translate(-50%,-50%)${f.giro};`
-      + 'transition:opacity .12s, box-shadow .12s, filter .12s;';
+      + 'transition:opacity .12s; will-change:opacity;';
 
     // Reflejo del vidrio: un puntito claro arriba a la izquierda.
     if (c.vidrio ?? true) {
@@ -127,22 +127,40 @@ export function construirCadena(wrap, c, rectMarco) {
 
 // Pinta UN foco. Separado a propósito: es lo único que corre en cada
 // frame, así el resto (posiciones, elementos) no se recalcula.
+// Pinta UN foco. Es lo único que corre en cada paso de la animación,
+// así que está escrito para tocar lo menos posible:
+//
+//  - `background` y `box-shadow` obligan al navegador a REPINTAR el
+//    foco y su halo. Son lo caro, y antes se reescribían siempre.
+//    Ahora solo se tocan cuando el foco realmente cambia de color,
+//    que en la mayoría de las animaciones no pasa nunca (cada foco
+//    tiene su color fijo y solo se prende y se apaga).
+//
+//  - Prender y apagar pasa a resolverse SOLO con `opacity`, que la
+//    placa de video maneja sin repintar nada. Se sacó el `filter`
+//    por el mismo motivo: se veía casi igual y costaba un repintado
+//    por foco por paso.
+//
+// Con luces en pantalla el giro de los rodillos se sentía despareja:
+// el repintado del resplandor competía con la animación. Este es el
+// motivo por el que se hizo así y no de la forma obvia.
 function pintarFoco(dot, color, encendido, c) {
-  const glow = Number(c.glow ?? 14);
-  const nucleo = Number(c.nucleo ?? 45);
-  const apagado = Number(c.apagado ?? 18) / 100;
-  const intensidad = encendido ? 1 : apagado;
-  const blanco = encendido ? nucleo : Math.max(0, nucleo - 30);
+  if (dot._color !== color) {
+    dot._color = color;
+    const glow = Number(c.glow ?? 14);
+    const nucleo = Number(c.nucleo ?? 45);
+    dot.style.background = `radial-gradient(circle at 50% 45%, #fff 0%, #fff ${nucleo * 0.35}%, ${color} ${Math.max(nucleo, 40)}%, ${color} 100%)`;
+    dot.style.boxShadow = glow > 0
+      ? `0 0 ${glow}px ${glow * 0.4}px ${color}, 0 0 ${glow * 2.2}px ${color}55`
+      : 'none';
+  }
 
-  dot.style.background = `radial-gradient(circle at 50% 45%, #fff 0%, #fff ${blanco * 0.35}%, ${color} ${Math.max(blanco, 40)}%, ${color} 100%)`;
-  dot.style.boxShadow = glow > 0
-    ? `0 0 ${glow * intensidad}px ${glow * intensidad * 0.4}px ${color}, 0 0 ${glow * intensidad * 2.2}px ${color}55`
-    : 'none';
-  dot.style.opacity = encendido ? 1 : Math.max(0.22, apagado);
-  dot.style.filter = `saturate(${encendido ? 1.1 : 0.75}) brightness(${encendido ? 1 : 0.55})`;
-
-  const brillo = dot.firstElementChild;
-  if (brillo) brillo.style.background = `rgba(255,255,255,${encendido ? 0.85 : 0.3})`;
+  const apagado = Math.max(0.12, Number(c.apagado ?? 18) / 100);
+  const op = encendido ? 1 : apagado;
+  if (dot._op !== op) {
+    dot._op = op;
+    dot.style.opacity = op;
+  }
 }
 
 // ---------------- Animaciones ----------------
@@ -213,7 +231,7 @@ export function animarCadena(c, ahora) {
 // Se limita a ~11 cuadros por segundo a propósito: las luces no
 // necesitan más y así le dejan el resto del tiempo a la animación de
 // los rodillos, que sí necesita ir fluida.
-export function iniciarAnimacionLuces(obtenerCadenas) {
+export function iniciarAnimacionLuces(obtenerCadenas, estaOcupado) {
   const t0 = Date.now();
   let ultimo = 0;
   let vivo = true;
@@ -221,7 +239,12 @@ export function iniciarAnimacionLuces(obtenerCadenas) {
   const paso = () => {
     if (!vivo) return;
     const ahora = Date.now();
-    if (ahora - ultimo >= 90) {
+    // Se mantiene un respiro extra mientras los rodillos giran, por
+    // las dudas: aunque ahora prender y apagar un foco es barato,
+    // cuando cambia de color sí hay repintado, y en cadenas de muchos
+    // focos con varios colores eso se acumula.
+    const cada = estaOcupado?.() ? 130 : 90;
+    if (ahora - ultimo >= cada) {
       ultimo = ahora;
       obtenerCadenas().forEach((c) => animarCadena(c, ahora - t0));
     }

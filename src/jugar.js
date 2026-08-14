@@ -547,7 +547,7 @@ function render(datos, saldoInicial) {
 
   // Un solo intervalo para todas las cadenas, igual que en el
   // ensamblador: no se crea un timer por cadena.
-  if ((cadenasLuces || []).length) iniciarAnimacionLuces(() => cadenasLuces);
+  if ((cadenasLuces || []).length) iniciarAnimacionLuces(() => cadenasLuces, () => girando);
 
   let montoDemoTexto = null;
   const aplicarPosicionPremio = (nivel) => {
@@ -753,7 +753,7 @@ function render(datos, saldoInicial) {
   // píxeles; lo que se dibuja es esa distancia en módulo del largo
   // del bucle.
   const rodillos = [0, 1, 2].map(() => ({
-    y: 0, v: 0, celdaPx: 0, loopPx: 0, celdas: [],
+    y: 0, v: 0, vMax: 0, celdaPx: 0, loopPx: 0, celdas: [],
     fase: 'quieto', destino: 0, salida: 0, distancia: 0, inicio: 0, duracion: 0, pasada: 0,
   }));
 
@@ -812,16 +812,28 @@ function render(datos, saldoInicial) {
   // El bucle único: nada de leer el layout acá adentro, solo mover.
   let ultimoFrame = 0;
   function frameRodillos(ahora) {
-    const dt = ultimoFrame ? Math.min(50, ahora - ultimoFrame) : 16;
+    // Tope bajo a propósito: si un cuadro tarda mucho (el navegador
+    // se distrajo con otra cosa), se avanza como si hubieran pasado
+    // 34ms en vez del tiempo real. Se pierde un poco de exactitud
+    // pero no se produce un tirón grande, que es lo que se ve.
+    const dt = ultimoFrame ? Math.min(34, ahora - ultimoFrame) : 16;
     ultimoFrame = ahora;
 
     rodillos.forEach((r, col) => {
       if (r.fase === 'quieto' || !r.loopPx) return;
 
       if (r.fase === 'acelerando' || r.fase === 'constante') {
-        const vMax = r.celdaPx / (55 / velocidad);
-        if (r.v < vMax) {
-          r.v = Math.min(vMax, r.v + (vMax / 260) * dt);
+        // r.vMax se fija al arrancar el giro y no se vuelve a leer:
+        // antes se calculaba en cada cuadro a partir de `velocidad`,
+        // y como los botones x1/x2/x3 siguen tocables mientras gira,
+        // tocar uno a mitad del giro hacía que los rodillos
+        // aceleraran de golpe.
+        if (r.v < r.vMax) {
+          // Arranque progresivo: la subida es más fuerte al principio
+          // y se va suavizando, en vez de una rampa recta que llega a
+          // la velocidad final de un saque.
+          const falta = (r.vMax - r.v) / r.vMax;
+          r.v = Math.min(r.vMax, r.v + (r.vMax / 340) * dt * (0.35 + falta));
         } else {
           r.fase = 'constante';
         }
@@ -867,6 +879,7 @@ function render(datos, saldoInicial) {
       if (!r.loopPx) return;
       r.fase = 'acelerando';
       r.v = 0;
+      r.vMax = r.celdaPx / (55 / velocidad);
       cintas[col].style.willChange = 'transform';
     });
   }
@@ -893,7 +906,7 @@ function render(datos, saldoInicial) {
     if (!r.loopPx) return 0;
 
     const duracionDeseada = DURACION_BASE[col] / velocidad;
-    const vActual = Math.max(r.v, r.celdaPx / 400);
+    const vActual = Math.max(r.v, r.vMax || r.celdaPx / 400);
 
     // Con la curva cuadrática la velocidad de arranque es 2*d/D: de
     // ahí sale la distancia que le corresponde a la velocidad que el
