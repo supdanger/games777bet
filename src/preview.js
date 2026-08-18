@@ -92,6 +92,24 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   let ordenCapas = ordenPorDefecto(juego);
   let capaActual = 'grilla';
 
+  // Con 10 pestañas sueltas en una fila, encontrar la que buscás
+  // costaba más de lo debido. Se agrupan en 4 categorías; adentro de
+  // cada una siguen siendo las mismas pestañas de siempre, con la
+  // misma lógica de abajo — esto solo cambia cómo se navega hasta
+  // ellas, no toca ningún pintarPanelX().
+  const CATEGORIAS_PANEL = [
+    { id: 'capas', etiqueta: 'Capas', tabs: ['fondo_pantalla', 'marco', 'grilla', 'cartel'] },
+    { id: 'extras', etiqueta: 'Extras', tabs: ['libres', 'luces', 'animaciones'] },
+    { id: 'controles', etiqueta: 'Controles', tabs: ['girar', 'controles'] },
+    { id: 'premio', etiqueta: 'Premio', tabs: ['premio'] },
+  ];
+  const ETIQUETA_CAPA = {
+    fondo_pantalla: 'Fondo', marco: 'Marco', grilla: 'Grilla', cartel: 'Cartel',
+    libres: 'Libres', luces: 'Luces', animaciones: 'Animaciones',
+    girar: 'Girar', controles: 'Controles', premio: 'Premio',
+  };
+  let categoriaActual = CATEGORIAS_PANEL.find((c) => c.tabs.includes(capaActual))?.id || 'capas';
+
   // Una imagen y posición por nivel de premio — igual que ya
   // funciona con los sonidos (premio chico / premio grande).
   const { data: filasPremio } = await supabase.from('premios_visuales').select('*').eq('juego_id', juego.id);
@@ -463,20 +481,18 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
       <p class="hint" style="margin:4px 0 10px">Se ve en vivo a la izquierda.</p>
 
       <p style="font-weight:600; margin:0 0 6px; font-size:13px">Estoy ajustando</p>
-      <div style="display:flex; gap:4px; margin-bottom:14px; flex-wrap:wrap">
-        <button data-capa="fondo_pantalla" class="pv-tab">Fondo</button>
-        <button data-capa="marco" class="pv-tab">Marco</button>
-        <button data-capa="grilla" class="pv-tab">Grilla</button>
-        <button data-capa="cartel" class="pv-tab">Cartel</button>
-        <button data-capa="libres" class="pv-tab">Libres</button>
-        <button data-capa="luces" class="pv-tab">Luces</button>
-        <button data-capa="animaciones" class="pv-tab">Animaciones</button>
-        <button data-capa="girar" class="pv-tab">Girar</button>
-        <button data-capa="controles" class="pv-tab">Controles</button>
-        <button data-capa="premio" class="pv-tab">Premio</button>
+      <div class="cat-nav" style="margin-bottom:8px">
+        ${CATEGORIAS_PANEL.map((c) => `
+          <button data-cat="${c.id}" class="cat-btn ${c.id === categoriaActual ? 'on' : ''}">${c.etiqueta}</button>
+        `).join('')}
+      </div>
+      <div class="grupo-nav" style="margin-bottom:14px">
+        ${CATEGORIAS_PANEL.find((c) => c.id === categoriaActual).tabs.map((t) => `
+          <button data-capa="${t}" class="pv-tab ${t === capaActual ? 'on' : ''}">${ETIQUETA_CAPA[t]}</button>
+        `).join('')}
       </div>
 
-      <div id="pv-sliders"></div>
+      <div id="pv-sliders" class="fade-in"></div>
 
       <div id="pv-orden-wrap" style="border-top:1px solid var(--border); margin-top:14px; padding-top:14px">
         <p style="font-weight:600; margin:0 0 4px; font-size:13px">Orden de capas</p>
@@ -488,12 +504,21 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
       <p id="pv-guardar-msg" class="hint"></p>
     `;
 
-    panel.querySelectorAll('.pv-tab').forEach((btn) => {
-      const activo = btn.dataset.capa === capaActual;
-      btn.style.borderColor = activo ? 'var(--accent)' : 'var(--border)';
-      btn.style.color = activo ? 'var(--accent)' : 'var(--text)';
+    panel.querySelectorAll('.cat-btn').forEach((btn) => {
       btn.style.flex = '1 1 40%';
       btn.style.fontSize = '12px';
+      btn.style.justifyContent = 'center';
+      btn.addEventListener('click', () => {
+        categoriaActual = btn.dataset.cat;
+        capaActual = CATEGORIAS_PANEL.find((c) => c.id === categoriaActual).tabs[0];
+        pintarPanel();
+      });
+    });
+
+    panel.querySelectorAll('.pv-tab').forEach((btn) => {
+      btn.style.flex = '1 1 30%';
+      btn.style.fontSize = '12px';
+      btn.style.justifyContent = 'center';
       btn.addEventListener('click', () => { capaActual = btn.dataset.capa; pintarPanel(); });
     });
 

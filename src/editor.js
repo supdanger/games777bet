@@ -27,7 +27,112 @@ export function renderEditor(el, juego, onCambio) {
   let sonidos = [];
   let digitos = [];
 
+  const GRUPOS = [
+    { id: 'general', etiqueta: 'General' },
+    { id: 'arte', etiqueta: 'Arte' },
+    { id: 'jugabilidad', etiqueta: 'Jugabilidad' },
+    { id: 'sonido', etiqueta: 'Sonido' },
+    { id: 'efectos', etiqueta: 'Efectos' },
+  ];
+  let grupoActual = 'jugabilidad';
+
+  // "Guardado hace Xs": un solo reloj para todo el editor. Se marca
+  // desde cualquier punto que realmente escriba en la base (subida de
+  // archivo, edición de símbolo, efecto, cliente) — no hace falta que
+  // cada sección lleve su propio indicador.
+  let ultimoGuardado = null;
+  const marcarGuardado = () => { ultimoGuardado = Date.now(); pintarGuardado(); };
+  const pintarGuardado = () => {
+    const elTxt = el.querySelector('#ed-header-guardado');
+    if (!elTxt) return;
+    if (!ultimoGuardado) { elTxt.textContent = ''; return; }
+    const seg = Math.round((Date.now() - ultimoGuardado) / 1000);
+    elTxt.textContent = seg < 2 ? 'Guardado ✓' : `Guardado hace ${seg}s`;
+  };
+  setInterval(pintarGuardado, 1000);
+
+  // Qué le falta a cada grupo — mismo criterio que la verificación
+  // antes de publicar, pero visible mientras vas armando, no recién
+  // al final. Un punto ámbar no bloquea nada, solo avisa.
+  const puntosGrupo = () => {
+    const rtp = simbolos.length ? analizar(simbolos).rtp : 0;
+    return {
+      general: Number(juego.min_bet) <= 0 || Number(juego.max_bet) < Number(juego.min_bet),
+      arte: !juego.portada_url,
+      jugabilidad: !simbolos.length || simbolos.some((s) => !s.icono_url) || rtp > 100,
+      sonido: !sonidos.length,
+      efectos: false,
+    };
+  };
+
+  const mostrarGrupo = () => {
+    el.querySelectorAll('.ed-grupo').forEach((g) => {
+      const on = g.dataset.grupo === grupoActual;
+      g.style.display = on ? 'block' : 'none';
+      if (on) g.classList.add('fade-in');
+    });
+  };
+
+  const pintarGrupos = () => {
+    const puntos = puntosGrupo();
+    el.querySelector('#ed-grupos').innerHTML = GRUPOS.map((g) => `
+      <button data-grupo-btn="${g.id}" class="grupo-btn ${g.id === grupoActual ? 'on' : ''}">
+        <span class="grupo-punto ${puntos[g.id] ? 'alerta' : ''}"></span>${g.etiqueta}
+      </button>
+    `).join('');
+    el.querySelectorAll('[data-grupo-btn]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        grupoActual = btn.dataset.grupoBtn;
+        pintarGrupos();
+        mostrarGrupo();
+      });
+    });
+  };
+
+  // Franja siempre visible, sin importar en qué grupo estés — RTP,
+  // versión (lo que ve Win777 al sincronizar) y si está publicado.
+  const pintarResumen = () => {
+    const rtp = simbolos.length ? analizar(simbolos).rtp.toFixed(1) + '%' : '--';
+    el.querySelector('#ed-resumen').innerHTML = `
+      <span class="ed-resumen-chip">RTP ${rtp}</span>
+      <span class="ed-resumen-chip">versión ${juego.version || 1}</span>
+      <span class="ed-resumen-chip">${juego.publicado ? 'publicado ✓' : 'sin publicar'}</span>
+    `;
+  };
+
+  const pintarHeader = () => {
+    const thumb = el.querySelector('#ed-header-thumb');
+    if (juego.portada_url) {
+      thumb.style.backgroundImage = `url('${juego.portada_url}')`;
+      thumb.textContent = '';
+    } else {
+      thumb.style.backgroundImage = 'none';
+      thumb.textContent = '🎰';
+    }
+    const badge = el.querySelector('#ed-header-estado');
+    badge.className = `badge ${juego.estado}`;
+    badge.textContent = { borrador: 'Borrador', en_prueba: 'En prueba', listo: 'Listo' }[juego.estado];
+  };
+
   el.innerHTML = `
+    <div class="ed-header-fijo">
+      <div class="ed-header-thumb" id="ed-header-thumb">🎰</div>
+      <div style="flex:1; min-width:0">
+        <p style="margin:0; font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${escapeHtml(juego.nombre)}</p>
+        <p class="hint" style="margin:2px 0 0; display:flex; align-items:center; gap:8px">
+          <span class="badge ${juego.estado}" id="ed-header-estado">${{ borrador: 'Borrador', en_prueba: 'En prueba', listo: 'Listo' }[juego.estado]}</span>
+          <span id="ed-header-guardado"></span>
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="ed-resumen-fila" style="display:flex; gap:7px; flex-wrap:wrap" id="ed-resumen"></div>
+    </div>
+
+    <div class="grupo-nav" style="margin-bottom:16px" id="ed-grupos"></div>
+
+    <div data-grupo="general" class="ed-grupo" style="display:none">
     <div class="card" style="margin-bottom:16px">
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px">
         <input id="ed-nombre" value="${escapeHtml(juego.nombre)}" style="flex:1; min-width:160px; font-size:16px; font-weight:600" />
@@ -44,12 +149,37 @@ export function renderEditor(el, juego, onCambio) {
         <input id="ed-desc" value="${escapeHtml(juego.descripcion || '')}" placeholder="Clásico de 3 rodillos con comodín" />
       </label>
 
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px">
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px">
         <label>Apuesta mínima<input id="ed-min" type="number" value="${juego.min_bet}" /></label>
         <label>Apuesta máxima<input id="ed-max" type="number" value="${juego.max_bet}" /></label>
       </div>
+    </div>
 
-      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:16px 0">
+    <div class="card">
+      <strong style="font-size:15px">Conectado a</strong>
+      <p class="hint" style="margin-bottom:14px">Qué casinos pueden servir este juego. Gestioná los clientes desde el botón "Clientes" de arriba.</p>
+      <div id="ed-clientes"><p class="hint">Cargando...</p></div>
+    </div>
+    </div>
+
+    <div data-grupo="arte" class="ed-grupo" style="display:none">
+    <div class="card">
+      <strong style="font-size:15px">Imágenes</strong>
+      <p class="hint" style="margin-bottom:14px">Subí acá. La posición y el tamaño se ajustan desde "⚙ Ajustar posición" en la Vista previa, viendo el resultado en vivo sobre el tamaño real del celular.</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:14px">
+        <div style="max-width:170px"><div id="ed-fondo"></div></div>
+        <div style="max-width:170px"><div id="ed-fondo-pantalla"></div></div>
+        <div style="max-width:170px"><div id="ed-marco"></div></div>
+        <div style="max-width:170px"><div id="ed-cartel"></div></div>
+        <div style="max-width:170px"><div id="ed-portada"></div></div>
+        <div style="max-width:170px"><div id="ed-carga"></div></div>
+      </div>
+    </div>
+    </div>
+
+    <div data-grupo="jugabilidad" class="ed-grupo">
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:16px">
         <div><p class="hint" style="margin:0">Retorno</p><strong id="out-rtp" style="font-size:20px">--</strong></div>
         <div><p class="hint" style="margin:0">Volatilidad</p><strong id="out-vol" style="font-size:20px">--</strong></div>
         <div><p class="hint" style="margin:0">Premio mayor</p><strong id="out-mayor" style="font-size:20px">--</strong></div>
@@ -69,38 +199,31 @@ export function renderEditor(el, juego, onCambio) {
         </div>
         <div id="ed-historial"></div>
       </div>
+    </div>
 
-      <strong style="font-size:14px">Símbolos</strong>
+    <div class="card">
+      <strong style="font-size:15px">Símbolos</strong>
       <div id="ed-tabla" style="display:flex; flex-direction:column; gap:6px; margin-top:8px"></div>
       <button id="ed-agregar" style="margin-top:10px">+ Agregar símbolo</button>
     </div>
-
-    <div class="card" style="margin-bottom:16px">
-      <strong style="font-size:15px">Imágenes</strong>
-      <p class="hint" style="margin-bottom:14px">Subí acá. La posición y el tamaño se ajustan desde "⚙ Ajustar posición" en la Vista previa, viendo el resultado en vivo sobre el tamaño real del celular.</p>
-      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:14px">
-        <div style="max-width:170px"><div id="ed-fondo"></div></div>
-        <div style="max-width:170px"><div id="ed-fondo-pantalla"></div></div>
-        <div style="max-width:170px"><div id="ed-marco"></div></div>
-        <div style="max-width:170px"><div id="ed-cartel"></div></div>
-        <div style="max-width:170px"><div id="ed-portada"></div></div>
-        <div style="max-width:170px"><div id="ed-carga"></div></div>
-      </div>
     </div>
 
+    <div data-grupo="sonido" class="ed-grupo" style="display:none">
     <div class="card" style="margin-bottom:16px">
       <strong style="font-size:15px">Sonidos</strong>
       <p class="hint" style="margin-bottom:14px">Archivos cortos (mp3 u ogg). La música arranca con el primer toque del jugador.</p>
       <div id="ed-sonidos" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px"></div>
     </div>
 
-    <div class="card" style="margin-bottom:16px">
+    <div class="card">
       <strong style="font-size:15px">Dígitos del monto ganado</strong>
       <p class="hint" style="margin-bottom:14px">Opcional: subí un ícono por carácter (0-9 y el punto) para mostrar el monto ganado con tu propio estilo en vez de texto. Lo que no subas se sigue mostrando como texto normal.</p>
       <div id="ed-digitos" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(52px,1fr)); gap:8px; max-width:440px"></div>
     </div>
+    </div>
 
-    <div class="card" style="margin-bottom:16px">
+    <div data-grupo="efectos" class="ed-grupo" style="display:none">
+    <div class="card">
       <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px">
         <strong style="font-size:15px; flex:1">Efectos</strong>
         <button id="ef-nuevo">+ Nuevo efecto</button>
@@ -108,11 +231,6 @@ export function renderEditor(el, juego, onCambio) {
       <p class="hint" style="margin-bottom:14px">Animaciones CSS. Las de carcasa se ven siempre; las de premio disparan al ganar.</p>
       <div id="ed-efectos" style="display:flex; flex-direction:column; gap:10px"></div>
     </div>
-
-    <div class="card">
-      <strong style="font-size:15px">Conectado a</strong>
-      <p class="hint" style="margin-bottom:14px">Qué casinos pueden servir este juego. Gestioná los clientes desde el botón "Clientes" de arriba.</p>
-      <div id="ed-clientes"><p class="hint">Cargando...</p></div>
     </div>
   `;
 
@@ -182,7 +300,7 @@ export function renderEditor(el, juego, onCambio) {
         if (!archivo) return;
         const s = simbolos[+e.target.dataset.icono];
         const url = await subirArchivo(archivo, `iconos/${juego.id}`);
-        if (url) { s.icono_url = url; await guardarSimbolo(s); pintarTabla(); }
+        if (url) { s.icono_url = url; await guardarSimbolo(s); pintarTabla(); calcular(); }
       });
     });
 
@@ -253,6 +371,9 @@ export function renderEditor(el, juego, onCambio) {
     } else {
       aviso.style.display = 'none';
     }
+
+    pintarResumen();
+    pintarGrupos();
   };
 
   const guardarSimbolo = async (s) => {
@@ -267,6 +388,7 @@ export function renderEditor(el, juego, onCambio) {
       }).select().single();
       if (data) s.id = data.id;
     }
+    marcarGuardado();
   };
 
   el.querySelector('#ed-agregar').addEventListener('click', async () => {
@@ -294,6 +416,8 @@ export function renderEditor(el, juego, onCambio) {
       if (nuevaUrl) {
         await supabase.from('juegos').update({ [campo]: nuevaUrl }).eq('id', juego.id);
         juego[campo] = nuevaUrl;
+        marcarGuardado();
+        pintarHeader();
         pintarImagen(contId, campo, etiqueta);
       }
     });
@@ -301,6 +425,8 @@ export function renderEditor(el, juego, onCambio) {
       if (!confirm(`¿Quitar el ${etiqueta.toLowerCase()}?`)) return;
       await supabase.from('juegos').update({ [campo]: null }).eq('id', juego.id);
       juego[campo] = null;
+      marcarGuardado();
+      pintarHeader();
       pintarImagen(contId, campo, etiqueta);
     });
   };
@@ -330,6 +456,7 @@ export function renderEditor(el, juego, onCambio) {
       if (nuevaUrl) {
         await supabase.from('juegos').update({ [campoUrl]: nuevaUrl }).eq('id', juego.id);
         juego[campoUrl] = nuevaUrl;
+        marcarGuardado();
         pintarImagenPosicionable(contId, campoUrl, camposReset, etiqueta);
       }
     });
@@ -339,6 +466,7 @@ export function renderEditor(el, juego, onCambio) {
       const patch = { [campoUrl]: null, ...camposReset };
       Object.assign(juego, patch);
       await supabase.from('juegos').update(patch).eq('id', juego.id);
+      marcarGuardado();
       pintarImagenPosicionable(contId, campoUrl, camposReset, etiqueta);
     });
   };
@@ -347,6 +475,7 @@ export function renderEditor(el, juego, onCambio) {
   const cargarSonidos = async () => {
     const { data } = await supabase.from('sonidos').select('*').eq('juego_id', juego.id);
     sonidos = data || [];
+    pintarGrupos();
     const cont = el.querySelector('#ed-sonidos');
     cont.innerHTML = SONIDOS.map((s) => {
       const existe = sonidos.find((x) => x.tipo === s.tipo);
@@ -371,6 +500,7 @@ export function renderEditor(el, juego, onCambio) {
           { juego_id: juego.id, tipo, archivo_url: url },
           { onConflict: 'juego_id,tipo' }
         );
+        marcarGuardado();
         cargarSonidos();
       });
     });
@@ -403,6 +533,7 @@ export function renderEditor(el, juego, onCambio) {
           { juego_id: juego.id, caracter, imagen_url: url },
           { onConflict: 'juego_id,caracter' }
         );
+        marcarGuardado();
         cargarDigitos();
       });
     });
@@ -443,6 +574,7 @@ export function renderEditor(el, juego, onCambio) {
         efectos[i][campo] = e.target.value;
         if (campo === 'tipo') cont.querySelector(`[data-solo-premio="${i}"]`).style.display = e.target.value === 'premio' ? 'flex' : 'none';
         await supabase.from('efectos').update({ [campo]: e.target.value }).eq('id', efectos[i].id);
+        marcarGuardado();
       });
     });
 
@@ -680,11 +812,16 @@ export function renderEditor(el, juego, onCambio) {
         } else {
           await supabase.from('juego_clientes').delete().eq('juego_id', juego.id).eq('cliente_id', clienteId);
         }
+        marcarGuardado();
       });
     });
   };
 
   // Arranque
+  pintarHeader();
+  pintarResumen();
+  pintarGrupos();
+  mostrarGrupo();
   cargarSimbolos();
   pintarImagen('#ed-fondo', 'fondo_url', 'Fondo del rodillo');
   pintarImagenPosicionable('#ed-fondo-pantalla', 'fondo_pantalla_url', { fondo_pantalla_x: 50, fondo_pantalla_y: 50, fondo_pantalla_ancho: 100, fondo_pantalla_alto: 100 }, 'Fondo de pantalla');

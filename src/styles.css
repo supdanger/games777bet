@@ -107,3 +107,51 @@ button.primary:hover { background: var(--accent-hover); border-color: var(--acce
 
 .celda-ganadora { box-shadow: inset 0 0 0 2px var(--accent); border-radius: 8px; }
 .celda-ganadora img, .celda-ganadora span { transform: scale(1.12); transition: transform .15s; }
+
+/* ---------------------------------------------------------
+   Navegación agrupada del ensamblador (editor y Ajustar posición).
+   Vidrio sutil: blur + fondo semitransparente, contenido a la vista
+   de todo lo demás. Solo estos elementos nuevos lo usan — el resto
+   de la app (cards, inputs, botones) sigue exactamente igual.
+--------------------------------------------------------- */
+.grupo-nav, .cat-nav { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.grupo-btn, .cat-btn {
+  display: flex; align-items: center;
+  padding: 8px 14px; font-size: 13px; font-weight: 500; color: var(--text-dim);
+  background: rgba(27,31,39,.55);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border-soft); border-radius: 10px; cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+.grupo-btn:hover, .cat-btn:hover { background: rgba(38,43,52,.7); color: var(--text); }
+.grupo-btn.on, .cat-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+.grupo-punto {
+  width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 7px;
+  background: currentColor; opacity: .45;
+}
+.grupo-punto.alerta { background: var(--warning); opacity: 1; box-shadow: 0 0 5px var(--warning); }
+
+.ed-header-fijo {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 16px;
+  background: rgba(20,23,29,.6);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
+}
+.ed-header-thumb {
+  width: 42px; height: 42px; border-radius: 9px; background: var(--surface-alt);
+  border: 1px solid var(--border); flex-shrink: 0;
+  background-size: cover; background-position: center; display: flex;
+  align-items: center; justify-content: center; font-size: 18px; color: var(--text-dim);
+}
+.ed-resumen-chip {
+  padding: 5px 10px; font-size: 11px; color: var(--text-dim);
+  background: rgba(255,255,255,.03); border: 1px solid var(--border-soft); border-radius: 7px;
+}
+
+.fade-in { animation: ensamblador-fadein .22s ease; }
+@keyframes ensamblador-fadein {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: none; }
+}
