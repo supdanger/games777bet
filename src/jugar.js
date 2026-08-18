@@ -12,7 +12,7 @@
 import './styles.css';
 import { ANCHO_ESC, ALTO_ESC, construirCadena, iniciarAnimacionLuces } from './luces.js';
 import { mostrarTablaPagos } from './tabla-pagos.js';
-import { animarSimboloGanador, detenerAnimacionesSimbolos, mostrarAnimacionJuego, detenerAnimacionesJuego } from './lottie.js';
+import { animarSimboloGanador, detenerAnimacionesSimbolos, mostrarAnimacionJuego, detenerAnimacionesJuego, precargarLottie } from './lottie.js';
 
 const params = new URLSearchParams(location.search);
 const slug = params.get('slug');
@@ -141,7 +141,7 @@ function mostrarPantallaCarga(juego) {
 // una pantalla de carga para siempre — mejor entrar con una imagen
 // faltante que no entrar nunca.
 function esperarRecursos(datos, avance) {
-  const { juego, simbolos, sonidos, digitos, capasLibres, botones } = datos;
+  const { juego, simbolos, sonidos, digitos, capasLibres, botones, animaciones } = datos;
 
   const imagenes = [
     juego.fondo_url, juego.fondo_pantalla_url, juego.marco_url, juego.cartel_url,
@@ -153,7 +153,18 @@ function esperarRecursos(datos, avance) {
   ].filter(Boolean);
 
   const audios = (sonidos || []).map((s) => s.archivo_url).filter(Boolean);
-  const total = imagenes.length + audios.length;
+
+  // Lo mismo que las imágenes: los .json/.lottie de cada símbolo y
+  // los de las animaciones del juego (intro/girar/premio) se bajan
+  // ACÁ, no recién cuando hay que reproducirlos por primera vez —
+  // que sería justo en medio del festejo de un premio. Se dedupean
+  // porque el mismo archivo puede repetirse en varios símbolos.
+  const lottieUrls = [...new Set([
+    ...simbolos.flatMap((s) => [s.lottie_chico_url, s.lottie_grande_url]),
+    ...(animaciones || []).map((a) => a.lottie_url),
+  ].filter(Boolean))];
+
+  const total = imagenes.length + audios.length + lottieUrls.length + (lottieUrls.length ? 1 : 0);
   if (!total) { avance(1, 1); return Promise.resolve(); }
 
   let hechos = 0;
@@ -174,6 +185,19 @@ function esperarRecursos(datos, avance) {
       a.preload = 'auto';
       a.src = url;
     })),
+    ...lottieUrls.map((url) => new Promise((listo) => {
+      // Alcanza con bajar los bytes al caché del navegador — no hace
+      // falta instanciar el reproductor acá, eso lo hace la librería
+      // sola cuando llegue el momento real de mostrarla, y ya va a
+      // encontrar el archivo en caché en vez de tener que pedirlo.
+      fetch(url).then((r) => r.blob()).catch(() => {}).finally(() => { marcar(); listo(); });
+    })),
+    // El motor de Lottie en sí (el WASM que dibuja) se prepara acá
+    // solo si el juego realmente tiene alguna animación — un juego
+    // sin ninguna no paga ese costo.
+    ...(lottieUrls.length ? [
+      precargarLottie().catch(() => {}).finally(marcar),
+    ] : []),
   ];
 
   return Promise.race([

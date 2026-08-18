@@ -28,6 +28,22 @@ function cargarLottie() {
   return dotLottiePromise;
 }
 
+/**
+ * Prepara el motor de Lottie (baja y compila el WASM que dibuja las
+ * animaciones) ANTES de que haga falta reproducir la primera. Se usa
+ * durante la pantalla de carga del jugador, igual que las imágenes y
+ * los sonidos — así el primer símbolo que gana no se queda esperando
+ * a que el motor termine de prepararse en ese instante.
+ *
+ * Sin esto, la librería igual funciona — solo que la prepara recién
+ * la primera vez que un símbolo o una animación del juego la
+ * necesitan, que sería justo en medio del festejo de un premio.
+ */
+export async function precargarLottie() {
+  const { DotLottie } = await cargarLottie();
+  await DotLottie.preload?.();
+}
+
 // =========================================================
 // Símbolos ganadores
 // =========================================================
