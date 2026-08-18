@@ -11,6 +11,7 @@ import { supabase } from './supabase.js';
 import { girar, elegirSimbolo } from '../motor/clasico-3x3.js';
 import { ANCHO_ESC, ALTO_ESC, construirCadena, iniciarAnimacionLuces } from './luces.js';
 import { mostrarTablaPagos } from './tabla-pagos.js';
+import { animarSimboloGanador, detenerAnimacionesSimbolos, mostrarAnimacionJuego, detenerAnimacionesJuego } from './lottie.js';
 
 function celdaHtml(s) {
   if (s.icono_url) return `<img src="${s.icono_url}" style="width:60%; height:60%; object-fit:contain" />`;
@@ -126,6 +127,10 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // Cadenas de luces: mismo criterio que las imágenes libres,
   // cantidad variable. Cada una guarda su modo (marco/libre), focos,
   // colores y animación.
+  const { data: filasAnim } = await supabase.from('animaciones_lottie').select('*').eq('juego_id', juego.id).order('orden');
+  let animaciones = filasAnim || [];
+  let animActual = animaciones[0]?.id ?? null;
+
   const { data: filasCadenas } = await supabase.from('cadenas_luces').select('*').eq('juego_id', juego.id).order('orden');
   let cadenasLuces = filasCadenas || [];
   let cadenaActual = cadenasLuces[0]?.id ?? null;
@@ -175,6 +180,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
            quedaba tapando estos botones e interceptando el clic. -->
       <div style="display:flex; justify-content:space-between; margin-bottom:8px; gap:8px; width:420px; position:relative; z-index:50">
         <button id="pv-ajustar">⚙ Ajustar posición</button>
+        <button id="pv-probar-premio">🎯 Probar premio</button>
         <button id="pv-cerrar">✕ Cerrar prueba</button>
       </div>
       <div id="pv-escala-wrap" style="width:420px; height:860px; flex-shrink:0">
@@ -201,6 +207,8 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
         <div id="pv-capas-libres" style="position:absolute; inset:0; z-index:8; pointer-events:none"></div>
 
         <div id="pv-cadenas-luces" style="position:absolute; inset:0; z-index:9; pointer-events:none"></div>
+
+        <div id="pv-anim-rive" style="position:absolute; inset:0; z-index:14; pointer-events:none"></div>
 
         <div id="pv-premio-popup" style="position:absolute; z-index:15; display:none; border-radius:12px; background:rgba(0,0,0,.55); transition:opacity .25s; opacity:0; transform:translate(-50%,-50%)">
           <img id="pv-img-premio" style="position:absolute; z-index:0; display:none" />
@@ -462,6 +470,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
         <button data-capa="cartel" class="pv-tab">Cartel</button>
         <button data-capa="libres" class="pv-tab">Libres</button>
         <button data-capa="luces" class="pv-tab">Luces</button>
+        <button data-capa="animaciones" class="pv-tab">Animaciones</button>
         <button data-capa="girar" class="pv-tab">Girar</button>
         <button data-capa="controles" class="pv-tab">Controles</button>
         <button data-capa="premio" class="pv-tab">Premio</button>
@@ -509,6 +518,14 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
       panel.querySelector('#pv-guardar').style.display = 'none';
       desactivarArrastreLuces();
       pintarPanelLibres(slidersEl);
+      return;
+    }
+
+    if (capaActual === 'animaciones') {
+      panel.querySelector('#pv-orden-wrap').style.display = 'none';
+      panel.querySelector('#pv-guardar').style.display = 'none';
+      desactivarArrastreLuces();
+      pintarPanelAnimaciones(slidersEl);
       return;
     }
 
@@ -607,6 +624,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // ---------------- Juego ----------------
   let saldo = 10000;
   let girando = false;
+  let resultadoForzado = null;
   const pasoApuesta = Number(juego.paso_apuesta) || 500;
   const apuestaMin = Number(juego.min_bet) || 1000;
   const apuestaMax = Number(juego.max_bet) || 100000;
@@ -791,7 +809,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   };
   pintarTurbo();
 
-  const cerrar = () => { Object.values(audios).forEach((a) => a.pause()); timerCadenas(); overlay.remove(); };
+  const cerrar = () => { Object.values(audios).forEach((a) => a.pause()); timerCadenas(); detenerAnimacionesSimbolos(); detenerAnimacionesJuego(); overlay.remove(); };
   overlay.querySelector('#pv-cerrar').addEventListener('click', cerrar);
 
   overlay.querySelector('#pv-info').addEventListener('click', () => mostrarTablaPagos(overlay, simbolos, juego));
@@ -1311,6 +1329,143 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // una con su modo, cantidad, tamaño, animación, velocidad y
   // colores. En modo libre, los focos se arrastran directo en la
   // vista previa.
+
+  const EVENTOS_ANIM = [
+    { valor: 'intro', etiqueta: 'Intro (antes de la carga)', tope: 1 },
+    { valor: 'girar', etiqueta: 'Al girar', tope: 2 },
+    { valor: 'premio_chico', etiqueta: 'Premio chico', tope: 2 },
+    { valor: 'premio_mayor', etiqueta: 'Premio mayor', tope: 2 },
+  ];
+
+  const animRiveEl = overlay.querySelector('#pv-anim-rive');
+
+  // Sub-panel "Animaciones": la intro y los complementos de premio
+  // comparten controles (archivo, posición, tamaño) — lo único que
+  // cambia es CUÁNDO se prenden, que es el campo Evento.
+  function pintarPanelAnimaciones(container) {
+    container.innerHTML = `
+      <div style="display:flex; gap:4px; margin-bottom:10px; flex-wrap:wrap; align-items:center">
+        <div id="pa-chips" style="display:flex; gap:4px; flex-wrap:wrap; flex:1"></div>
+        <button id="pa-agregar" style="font-size:12px; white-space:nowrap">+ Agregar</button>
+      </div>
+      <div id="pa-editor"></div>
+    `;
+
+    const chipsEl = container.querySelector('#pa-chips');
+    chipsEl.innerHTML = animaciones.map((a, i) => {
+      const ev = EVENTOS_ANIM.find((e) => e.valor === a.evento);
+      return `<button data-id="${a.id}" style="font-size:11px">${ev ? ev.etiqueta.split(' ')[0] : a.evento} ${i + 1}</button>`;
+    }).join('');
+    chipsEl.querySelectorAll('button').forEach((btn) => {
+      const on = btn.dataset.id === animActual;
+      btn.style.borderColor = on ? 'var(--accent)' : 'var(--border)';
+      btn.style.color = on ? 'var(--accent)' : 'var(--text)';
+      btn.addEventListener('click', () => { animActual = btn.dataset.id; pintarPanelAnimaciones(container); });
+    });
+
+    container.querySelector('#pa-agregar').addEventListener('click', async () => {
+      const { data, error } = await supabase.from('animaciones_lottie')
+        .insert({ juego_id: juego.id, orden: animaciones.length })
+        .select().single();
+      if (error) { alert(error.message); return; }
+      animaciones.push(data);
+      animActual = data.id;
+      pintarPanelAnimaciones(container);
+    });
+
+    const actual = animaciones.find((a) => a.id === animActual);
+    const editorEl = container.querySelector('#pa-editor');
+    if (!actual) {
+      editorEl.innerHTML = '<p class="hint">Todavía no agregaste ninguna animación.</p>';
+      return;
+    }
+
+    // Cuántas hay ya en cada evento, para avisar si se pasa del tope
+    // acordado (más instancias de Rive a la vez empiezan a competir
+    // con la animación de los rodillos).
+    const cuantasEn = (ev) => animaciones.filter((a) => a.evento === ev && a.id !== actual.id).length;
+    const evActual = EVENTOS_ANIM.find((e) => e.valor === actual.evento);
+    const pasado = evActual && cuantasEn(actual.evento) >= evActual.tope;
+
+    const sl = (campo, etiqueta, min, max, unidad) => `
+      <label style="display:block; margin-bottom:8px; font-size:12px">${etiqueta} <span class="hint" id="pa-out-${campo}">${actual[campo]}${unidad}</span>
+        <input type="range" min="${min}" max="${max}" value="${actual[campo]}" data-campo="${campo}" />
+      </label>
+    `;
+
+    editorEl.innerHTML = `
+      <label style="display:block; margin-bottom:8px; font-size:12px">Cuándo se muestra
+        <select id="pa-evento" style="width:100%">
+          ${EVENTOS_ANIM.map((e) => `<option value="${e.valor}" ${actual.evento === e.valor ? 'selected' : ''}>${e.etiqueta}</option>`).join('')}
+        </select>
+      </label>
+      ${pasado ? `<p class="hint" style="color:var(--danger)">Ya hay ${evActual.tope} animación(es) en este evento. Más de eso puede tironear el giro en celulares.</p>` : ''}
+      <label style="display:block; height:56px; border-radius:8px; border:1px dashed var(--border); background:var(--surface-alt); cursor:pointer; overflow:hidden; position:relative; margin-bottom:8px">
+        <span class="hint" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px">${actual.lottie_url ? 'Archivo cargado ✓ — tocá para reemplazar' : 'Subir animación (.json o .lottie)'}</span>
+        <input type="file" accept=".json,.lottie" hidden id="pa-archivo" />
+      </label>
+      ${sl('x', 'Posición X', 0, 100, '%')}
+      ${sl('y', 'Posición Y', 0, 100, '%')}
+      ${sl('tamano', 'Tamaño', 10, 140, '%')}
+      <button id="pa-probar" style="width:100%; margin-top:6px">Probar acá</button>
+      <button class="primary" id="pa-guardar" style="width:100%; margin-top:8px">Guardar</button>
+      <button id="pa-quitar" style="width:100%; margin-top:8px; color:var(--danger)">Quitar esta animación</button>
+      <p id="pa-msg" class="hint"></p>
+    `;
+
+    editorEl.querySelector('#pa-evento').addEventListener('change', (e) => {
+      actual.evento = e.target.value;
+      pintarPanelAnimaciones(container);
+    });
+
+    editorEl.querySelectorAll('input[type="range"]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const campo = input.dataset.campo;
+        actual[campo] = Number(input.value);
+        editorEl.querySelector(`#pa-out-${campo}`).textContent = input.value + '%';
+      });
+    });
+
+    editorEl.querySelector('#pa-archivo').addEventListener('change', async (e) => {
+      const archivo = e.target.files?.[0];
+      if (!archivo) return;
+      const url = await subirArchivoBoton(archivo, `anim-${actual.id}`);
+      if (url) { actual.lottie_url = url; pintarPanelAnimaciones(container); }
+    });
+
+    // "Probar acá" la muestra en el lugar exacto donde quedó
+    // configurada, sin tener que ganar ni recargar.
+    editorEl.querySelector('#pa-probar').addEventListener('click', () => {
+      detenerAnimacionesJuego();
+      mostrarAnimacionJuego(animRiveEl, actual);
+    });
+
+    editorEl.querySelector('#pa-guardar').addEventListener('click', async () => {
+      const msgEl = editorEl.querySelector('#pa-msg');
+      msgEl.textContent = 'Guardando...';
+      const { error } = await supabase.from('animaciones_lottie').update({
+        evento: actual.evento, lottie_url: actual.lottie_url,
+        x: actual.x, y: actual.y, tamano: actual.tamano,
+      }).eq('id', actual.id);
+      msgEl.textContent = error ? error.message : 'Guardado ✓';
+    });
+
+    editorEl.querySelector('#pa-quitar').addEventListener('click', async () => {
+      if (!confirm('¿Quitar esta animación?')) return;
+      await supabase.from('animaciones_lottie').delete().eq('id', actual.id);
+      animaciones = animaciones.filter((a) => a.id !== actual.id);
+      animActual = animaciones[0]?.id ?? null;
+      detenerAnimacionesJuego();
+      pintarPanelAnimaciones(container);
+    });
+  }
+
+  // Dispara las animaciones configuradas para un evento del juego.
+  const lanzarAnimaciones = (evento) => {
+    animaciones.filter((a) => a.evento === evento && a.lottie_url)
+      .forEach((a) => mostrarAnimacionJuego(animRiveEl, a));
+  };
+
   function pintarPanelLuces(container) {
     container.innerHTML = `
       <div style="display:flex; gap:4px; margin-bottom:10px; flex-wrap:wrap; align-items:center">
@@ -1712,6 +1867,73 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // clientWidth es 0 y las celdas saldrían de tamaño cero.
   requestAnimationFrame(pintarGrillaInicial);
 
+
+  // ---------------- Probador de premios ----------------
+  // Arma un resultado a pedido y lo hace pasar por el MISMO camino
+  // que un giro real: gira, frena en la combinación elegida, muestra
+  // el cuadro de premio, anima el símbolo con su Rive y lanza las
+  // animaciones del evento. Así se prueba todo junto sin depender de
+  // que la suerte acompañe.
+  overlay.querySelector('#pv-probar-premio').addEventListener('click', () => {
+    if (girando) return;
+    const anterior = overlay.querySelector('#pv-probador');
+    if (anterior) { anterior.remove(); return; }
+
+    const caja = document.createElement('div');
+    caja.id = 'pv-probador';
+    caja.className = 'card';
+    caja.style.cssText = 'position:fixed; z-index:60; top:70px; left:50%; transform:translateX(-50%); width:260px';
+    caja.innerHTML = `
+      <p style="font-size:13px; font-weight:600; margin:0 0 10px">Probar premio</p>
+      <label style="display:block; margin-bottom:8px; font-size:12px">Símbolo
+        <select id="pp-simbolo" style="width:100%">
+          ${simbolos.map((s, i) => `<option value="${i}">${escapeHtml(s.nombre)}</option>`).join('')}
+        </select>
+      </label>
+      <label style="display:block; margin-bottom:10px; font-size:12px">Combinación
+        <select id="pp-nivel" style="width:100%">
+          <option value="dos_iguales">Dos iguales (rodillos 1-2)</option>
+          <option value="tres_iguales">Tres iguales</option>
+          <option value="premio_mayor">Premio mayor</option>
+        </select>
+      </label>
+      <button class="primary" id="pp-simular" style="width:100%">Simular</button>
+      <p class="hint" style="margin-top:8px">Gira igual que de verdad y dispara todo lo que tenga ese premio.</p>
+    `;
+    overlay.appendChild(caja);
+
+    caja.querySelector('#pp-simular').addEventListener('click', () => {
+      const simbolo = simbolos[Number(caja.querySelector('#pp-simbolo').value)];
+      const nivelElegido = caja.querySelector('#pp-nivel').value;
+      if (!simbolo) return;
+
+      const otro = simbolos.find((s) => s.nombre !== simbolo.nombre) || simbolo;
+      const alAzar = () => simbolos[Math.floor(Math.random() * simbolos.length)];
+
+      // La línea de pago es la fila del medio; arriba y abajo van
+      // símbolos cualesquiera, como en un giro real.
+      const columnaCon = (medio) => [alAzar(), medio, alAzar()];
+      const dosIguales = nivelElegido === 'dos_iguales';
+      const grillaForzada = [
+        columnaCon(simbolo),
+        columnaCon(simbolo),
+        columnaCon(dosIguales ? otro : simbolo),
+      ];
+
+      const pago = dosIguales ? (Number(simbolo.pago_dos) || 0) : (Number(simbolo.pago_tres) || 0);
+      resultadoForzado = {
+        grilla: grillaForzada,
+        premio: pago,
+        nivel: nivelElegido === 'dos_iguales' ? 'dos_iguales' : nivelElegido,
+        simbolosGanadores: dosIguales ? [0, 1] : [0, 1, 2],
+        filaPago: 1,
+      };
+
+      caja.remove();
+      btnGirar.click();
+    });
+  });
+
   btnGirar.addEventListener('click', async () => {
     if (girando) return;
     if (saldo < apuesta) { alert('Sin saldo de prueba. Cerrá y volvé a abrir.'); return; }
@@ -1727,8 +1949,16 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     // El resultado se calcula ANTES de que arranque el giro visual —
     // igual que en el servidor real, la animación nunca decide el
     // resultado, solo lo muestra.
-    const { grilla, premio, nivel } = girar(simbolos);
+    // El probador de premios deja un resultado preparado; si no hay
+    // ninguno, se gira normal. Así el probador recorre exactamente el
+    // mismo camino que un giro de verdad, sin una vía aparte que
+    // pueda quedar desfasada de la real.
+    const { grilla, premio, nivel, simbolosGanadores, filaPago } = resultadoForzado || girar(simbolos);
+    resultadoForzado = null;
     const total = simbolos.reduce((a, s) => a + s.peso, 0) || 1;
+    detenerAnimacionesSimbolos();
+    detenerAnimacionesJuego();
+    lanzarAnimaciones('girar');
 
     const tamanoCelda = [0, 1, 2].map((col) => armarCinta(col, grilla[col], total));
 
@@ -1749,12 +1979,19 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
 
     if (premio > 0) {
       mostrarPremio(ganancia, nivel);
+      lanzarAnimaciones(nivel === 'premio_mayor' ? 'premio_mayor' : 'premio_chico');
       // El símbolo del medio de cada cinta es siempre el de la línea
       // de pago (índice RELLENO+1: los 3 finales son [arriba, medio,
-      // abajo], en ese orden, al final de cada cinta).
-      cintas.forEach((cinta) => {
+      // abajo], en ese orden, al final de cada cinta). Solo se marcan
+      // y animan las columnas que REALMENTE forman parte del premio.
+      const columnasGanadoras = simbolosGanadores?.length ? simbolosGanadores : [0, 1, 2];
+      cintas.forEach((cinta, col) => {
+        if (!columnasGanadoras.includes(col)) return;
         const celdaGanadora = cinta.children[RELLENO + 1];
-        if (celdaGanadora) celdaGanadora.classList.add('celda-ganadora');
+        if (!celdaGanadora) return;
+        celdaGanadora.classList.add('celda-ganadora');
+        const simboloGanador = grilla[col][filaPago];
+        animarSimboloGanador(celdaGanadora, simboloGanador, nivel);
       });
 
       const ef = efectos.find((e) => e.tipo === 'premio' && e.nivel_premio === nivel);

@@ -12,6 +12,7 @@
 import './styles.css';
 import { ANCHO_ESC, ALTO_ESC, construirCadena, iniciarAnimacionLuces } from './luces.js';
 import { mostrarTablaPagos } from './tabla-pagos.js';
+import { animarSimboloGanador, detenerAnimacionesSimbolos, mostrarAnimacionJuego, detenerAnimacionesJuego } from './lottie.js';
 
 const params = new URLSearchParams(location.search);
 const slug = params.get('slug');
@@ -39,6 +40,11 @@ async function arrancar() {
       fetchJson(`/api/jugar-balance?token=${encodeURIComponent(token)}`),
     ]);
 
+    // Intro: corre ANTES de la pantalla de carga, pero la descarga de
+    // imágenes y sonidos arranca en paralelo — así la intro no le
+    // suma tiempo de espera al jugador, solo tapa el que ya existía.
+    const intro = (datos.animaciones || []).find((a) => a.evento === 'intro' && a.lottie_url);
+
     // El juego se arma escondido detrás de la pantalla de carga y se
     // revela recién cuando todo terminó de bajar. Si no, cada imagen
     // aparece cuando puede y el jugador ve el juego armarse de a
@@ -50,7 +56,12 @@ async function arrancar() {
     if (juegoEl) { juegoEl.style.opacity = '0'; juegoEl.style.transition = 'opacity .45s'; }
     raiz.appendChild(pantalla.el);
 
-    await esperarRecursos(datos, pantalla.avance);
+    // La descarga empieza YA, sin esperar a que termine la intro.
+    const descarga = esperarRecursos(datos, pantalla.avance);
+
+    if (intro) await correrIntro(intro, pantalla.el);
+
+    await descarga;
 
     if (juegoEl) juegoEl.style.opacity = '1';
     pantalla.el.style.opacity = '0';
@@ -58,6 +69,40 @@ async function arrancar() {
   } catch (err) {
     mostrarError(err.message || 'No se pudo cargar el juego.');
   }
+}
+
+// Corre la animación de intro por encima de la pantalla de carga, y
+// devuelve el control cuando la animación terminó su pasada.
+//
+// TOPE DE 2,5 SEGUNDOS a propósito: si alguien sube por error una
+// animación larga, o el archivo nunca avisa que terminó, la entrada
+// al juego no puede quedar trabada esperándola.
+function correrIntro(cfg, pantallaEl) {
+  return new Promise((listo) => {
+    // La animación se posiciona en % de la pantalla del juego (420x860),
+    // así que la capa que la contiene tiene que tener esa misma forma
+    // y escalarse igual — si no, la posición que ajustaste en el
+    // ensamblador caería en otro lado durante la intro.
+    const escala = Math.min(window.innerWidth / 420, window.innerHeight / 860);
+    const capa = document.createElement('div');
+    capa.style.cssText = 'position:absolute; left:50%; top:50%; width:420px; height:860px;'
+      + `transform:translate(-50%,-50%) scale(${escala}); z-index:2; pointer-events:none;`;
+    pantallaEl.appendChild(capa);
+
+    let cerrado = false;
+    const cerrar = () => {
+      if (cerrado) return;
+      cerrado = true;
+      clearTimeout(tope);
+      capa.style.transition = 'opacity .3s';
+      capa.style.opacity = '0';
+      setTimeout(() => { detenerAnimacionesJuego(); capa.remove(); }, 320);
+      listo();
+    };
+
+    const tope = setTimeout(cerrar, 2500);
+    mostrarAnimacionJuego(capa, cfg, cerrar);
+  });
 }
 
 // Pantalla de carga: imagen propia del juego si tiene, si no la
@@ -188,7 +233,7 @@ function ordenPorDefecto(juego) {
 }
 
 function render(datos, saldoInicial) {
-  const { juego, simbolos, sonidos: sonidosData, efectos, premios, digitos, capasLibres, cadenasLuces } = datos;
+  const { juego, simbolos, sonidos: sonidosData, efectos, premios, digitos, capasLibres, cadenasLuces, animaciones } = datos;
 
   const pos = conDefaults(juego);
   const ordenCapas = ordenPorDefecto(juego);
@@ -263,6 +308,8 @@ function render(datos, saldoInicial) {
 
         <div id="jg-cadenas-luces" style="position:absolute; inset:0; z-index:9; pointer-events:none"></div>
 
+        <div id="jg-anim-rive" style="position:absolute; inset:0; z-index:14; pointer-events:none"></div>
+
         <button id="jg-info" aria-label="Ver reglas y tabla de pagos" style="position:absolute; right:22px; top:22px; z-index:12; width:30px; height:30px; padding:0; border-radius:50%">ℹ</button>
 
         <div id="jg-premio-popup" style="position:absolute; z-index:15; display:none; border-radius:12px; background:rgba(0,0,0,.55); transition:opacity .25s; opacity:0; transform:translate(-50%,-50%)">
@@ -335,6 +382,15 @@ function render(datos, saldoInicial) {
   const montoPremioEl = raiz.querySelector('#jg-premio-monto');
   const capasLibresEl = raiz.querySelector('#jg-capas-libres');
   const cadenasLuzEl = raiz.querySelector('#jg-cadenas-luces');
+  const animRiveEl = raiz.querySelector('#jg-anim-rive');
+
+  // Complementos de Rive: acompañan al momento (el dragón escupiendo
+  // fuego mientras los símbolos festejan). Se cortan al arrancar el
+  // giro siguiente, así nunca se superponen dos festejos.
+  const lanzarAnimaciones = (evento) => {
+    (animaciones || []).filter((a) => a.evento === evento && a.lottie_url)
+      .forEach((a) => mostrarAnimacionJuego(animRiveEl, a));
+  };
   const cintas = [0, 1, 2].map((i) => raiz.querySelector(`#jg-cinta-${i}`));
   const efectoPremio = raiz.querySelector('#jg-efecto-premio');
   const btnGirar = raiz.querySelector('#jg-girar');
@@ -998,6 +1054,9 @@ function render(datos, saldoInicial) {
     rodillos.forEach((r) => {
       r.celdas.forEach((celda) => celda.classList.remove('celda-ganadora'));
     });
+    detenerAnimacionesSimbolos();
+    detenerAnimacionesJuego();
+    lanzarAnimaciones('girar');
 
     const arranque = Date.now();
     arrancarRodillos();
@@ -1026,7 +1085,8 @@ function render(datos, saldoInicial) {
     const restante = 750 / velocidad - (Date.now() - arranque);
     if (restante > 0) await new Promise((r) => setTimeout(r, restante));
 
-    const { grilla, premio, nivel, saldo: saldoNuevo } = resultado;
+    const { grilla, premio, nivel, saldo: saldoNuevo, simbolosGanadores } = resultado;
+    const filaPago = 1; // única línea de pago del motor, la del medio
 
     // 4) Frenado. Los tres símbolos de cada rodillo se escriben en
     // celdas que en ese momento están fuera de la vista (solo cambia
@@ -1042,9 +1102,20 @@ function render(datos, saldoInicial) {
 
     if (premio > 0) {
       mostrarPremio(premio, nivel);
+      lanzarAnimaciones(nivel === 'premio_mayor' ? 'premio_mayor' : 'premio_chico');
+      // Solo se marcan y animan las columnas que REALMENTE forman
+      // parte de la combinación ganadora — antes se pintaban las tres
+      // aunque fuera un premio de "dos iguales" (rodillos 1-2, la
+      // tercera no había pagado nada y se marcaba igual, lo que
+      // confundía la lectura de la jugada).
+      const columnasGanadoras = simbolosGanadores?.length ? simbolosGanadores : [0, 1, 2];
       rodillos.forEach((r, col) => {
+        if (!columnasGanadoras.includes(col)) return;
         const celdaGanadora = r.celdas[ranuras[col] + 1];
-        if (celdaGanadora) celdaGanadora.classList.add('celda-ganadora');
+        if (!celdaGanadora) return;
+        celdaGanadora.classList.add('celda-ganadora');
+        const simboloGanador = grilla[col][filaPago];
+        animarSimboloGanador(celdaGanadora, simboloGanador, nivel);
       });
       const ef = efectos.find((e) => e.tipo === 'premio' && e.nivel_premio === nivel);
       if (ef) {

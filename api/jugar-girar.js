@@ -28,7 +28,8 @@ export default async function handler(req, res) {
     if (existente) {
       return res.status(200).json({
         grilla: existente.grilla, premio: Number(existente.premio),
-        nivel: existente.nivel_premio, saldo: Number(existente.saldo_despues), repetido: true,
+        nivel: existente.nivel_premio, saldo: Number(existente.saldo_despues),
+        simbolosGanadores: existente.simbolos_ganadores || [], repetido: true,
       });
     }
 
@@ -78,11 +79,13 @@ export default async function handler(req, res) {
     supabaseAdmin.from('rondas_jugadas').insert({
       juego_id: juego.id, client_id: clientId, apuesta: monto, premio: ganancia,
       nivel_premio: resultado.nivel, grilla: resultado.grilla, saldo_despues: saldoFinal,
+      simbolos_ganadores: resultado.simbolosGanadores || [],
     }).then(({ error }) => { if (error) console.error('No se pudo registrar la ronda:', error.message); });
 
     return res.status(200).json({
       grilla: resultado.grilla, premio: ganancia, nivel: resultado.nivel,
-      filaPago: resultado.filaPago, saldo: saldoFinal, repetido: false,
+      filaPago: resultado.filaPago, saldo: saldoFinal,
+      simbolosGanadores: resultado.simbolosGanadores || [], repetido: false,
     });
   } catch (err) {
     return res.status(400).json({ error: err.message || 'Error al resolver el giro' });

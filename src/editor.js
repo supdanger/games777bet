@@ -62,6 +62,14 @@ export function renderEditor(el, juego, onCambio) {
         <p id="ed-sim-out" class="hint" style="margin:0; flex:1"></p>
       </div>
 
+      <div style="border-top:1px solid var(--border); padding-top:12px">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px">
+          <strong style="font-size:14px; flex:1">Jugadas reales</strong>
+          <button id="ed-refrescar-hist" style="font-size:12px">Actualizar</button>
+        </div>
+        <div id="ed-historial"></div>
+      </div>
+
       <strong style="font-size:14px">Símbolos</strong>
       <div id="ed-tabla" style="display:flex; flex-direction:column; gap:6px; margin-top:8px"></div>
       <button id="ed-agregar" style="margin-top:10px">+ Agregar símbolo</button>
@@ -109,6 +117,8 @@ export function renderEditor(el, juego, onCambio) {
   `;
 
   // ---------------- Símbolos ----------------
+  const riveExpandido = new Set();
+
   const cargarSimbolos = async () => {
     const { data } = await supabase.from('simbolos').select('*').eq('juego_id', juego.id).order('orden');
     simbolos = data || [];
@@ -130,8 +140,23 @@ export function renderEditor(el, juego, onCambio) {
         <label style="font-size:11px; color:var(--text-dim); white-space:nowrap">peso<input data-i="${i}" data-campo="peso" type="number" value="${s.peso}" style="width:55px" /></label>
         <label style="font-size:11px; color:var(--text-dim); white-space:nowrap">x3<input data-i="${i}" data-campo="pago_tres" type="number" value="${s.pago_tres}" style="width:65px" /></label>
         <label style="font-size:11px; color:var(--text-dim); white-space:nowrap">x2<input data-i="${i}" data-campo="pago_dos" type="number" value="${s.pago_dos}" style="width:55px" /></label>
+        <button data-rive-toggle="${i}" aria-label="Animación del símbolo" style="${(s.lottie_chico_url || s.lottie_grande_url) ? 'color:var(--accent); border-color:var(--accent)' : ''}">🎬</button>
         <button data-borrar="${i}" aria-label="Quitar">✕</button>
       </div>
+      ${riveExpandido.has(i) ? `
+        <div style="background:var(--surface-alt); border-radius:8px; padding:10px; margin:-6px 0 4px; display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start">
+          <div style="min-width:150px">
+            <p class="hint" style="margin:0 0 3px">Premio chico (dos/tres iguales)</p>
+            <input type="file" accept=".json,.lottie" data-lottie-chico="${i}" style="display:block" />
+            ${s.lottie_chico_url ? `<button data-lottie-quitar-chico="${i}" style="font-size:11px; margin-top:3px">Quitar</button>` : ''}
+          </div>
+          <div style="min-width:150px">
+            <p class="hint" style="margin:0 0 3px">Premio mayor</p>
+            <input type="file" accept=".json,.lottie" data-lottie-grande="${i}" style="display:block" />
+            ${s.lottie_grande_url ? `<button data-lottie-quitar-grande="${i}" style="font-size:11px; margin-top:3px">Quitar</button>` : ''}
+          </div>
+        </div>
+      ` : ''}
     `).join('') || '<p class="hint">Todavía no agregaste símbolos.</p>';
 
     cont.querySelectorAll('input[data-campo]').forEach((inp) => {
@@ -158,6 +183,51 @@ export function renderEditor(el, juego, onCambio) {
         const s = simbolos[+e.target.dataset.icono];
         const url = await subirArchivo(archivo, `iconos/${juego.id}`);
         if (url) { s.icono_url = url; await guardarSimbolo(s); pintarTabla(); }
+      });
+    });
+
+    // Animación Rive por símbolo: opcional, se abre/cierra sin
+    // recargar nada — solo se guarda cuando realmente cambia algo.
+    cont.querySelectorAll('[data-rive-toggle]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const i = +btn.dataset.riveToggle;
+        riveExpandido.has(i) ? riveExpandido.delete(i) : riveExpandido.add(i);
+        pintarTabla();
+      });
+    });
+
+    cont.querySelectorAll('[data-lottie-chico]').forEach((input) => {
+      input.addEventListener('change', async (e) => {
+        const archivo = e.target.files?.[0];
+        if (!archivo) return;
+        const s = simbolos[+e.target.dataset.lottieChico];
+        const url = await subirArchivo(archivo, `lottie/${juego.id}`);
+        if (url) { s.lottie_chico_url = url; await guardarSimbolo(s); pintarTabla(); }
+      });
+    });
+    cont.querySelectorAll('[data-lottie-grande]').forEach((input) => {
+      input.addEventListener('change', async (e) => {
+        const archivo = e.target.files?.[0];
+        if (!archivo) return;
+        const s = simbolos[+e.target.dataset.lottieGrande];
+        const url = await subirArchivo(archivo, `lottie/${juego.id}`);
+        if (url) { s.lottie_grande_url = url; await guardarSimbolo(s); pintarTabla(); }
+      });
+    });
+    cont.querySelectorAll('[data-lottie-quitar-chico]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const s = simbolos[+btn.dataset.lottieQuitarChico];
+        s.lottie_chico_url = null;
+        await guardarSimbolo(s);
+        pintarTabla();
+      });
+    });
+    cont.querySelectorAll('[data-lottie-quitar-grande]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const s = simbolos[+btn.dataset.lottieQuitarGrande];
+        s.lottie_grande_url = null;
+        await guardarSimbolo(s);
+        pintarTabla();
       });
     });
   };
@@ -189,6 +259,7 @@ export function renderEditor(el, juego, onCambio) {
     if (s.id) {
       await supabase.from('simbolos').update({
         nombre: s.nombre, peso: s.peso, pago_tres: s.pago_tres, pago_dos: s.pago_dos, icono_url: s.icono_url,
+        lottie_chico_url: s.lottie_chico_url, lottie_grande_url: s.lottie_grande_url,
       }).eq('id', s.id);
     } else {
       const { data } = await supabase.from('simbolos').insert({
@@ -412,6 +483,65 @@ export function renderEditor(el, juego, onCambio) {
     await supabase.from('juegos').update({ estado: e.target.value }).eq('id', juego.id);
     onCambio();
   });
+
+  // Historial: lo que el juego pagó de verdad, no lo que dice la
+  // tabla. Es el aviso temprano si un juego paga distinto a lo
+  // calibrado — con el bug de los pares se habría visto acá en un
+  // día, en vez de descubrirlo jugando de casualidad.
+  const cargarHistorial = async () => {
+    const cont = el.querySelector('#ed-historial');
+    cont.innerHTML = '<p class="hint" style="margin:0">Cargando...</p>';
+
+    const { data, error } = await supabase.rpc('resumen_juego', { p_juego_id: juego.id });
+    if (error) {
+      cont.innerHTML = `<p class="hint error" style="margin:0">${escapeHtml(error.message)}</p>`;
+      return;
+    }
+
+    const r = (data || [])[0];
+    if (!r || !Number(r.rondas)) {
+      cont.innerHTML = '<p class="hint" style="margin:0">Todavía no se jugó ninguna ronda con dinero real.</p>';
+      return;
+    }
+
+    const rondas = Number(r.rondas);
+    const rtpReal = r.rtp_real === null ? null : Number(r.rtp_real);
+    const { rtp: rtpTeorico } = simbolos.length ? analizar(simbolos) : { rtp: null };
+    const desvio = (rtpReal !== null && rtpTeorico !== null) ? Math.abs(rtpReal - rtpTeorico) : null;
+
+    // Con pocas rondas el RTP real no significa nada: puede estar
+    // lejísimos del teórico por pura suerte. Recién arriba de unas
+    // 500 vale la pena mirarlo, y para preocuparse de verdad hacen
+    // falta varios miles.
+    const confiable = rondas >= 500;
+    const alerta = confiable && desvio !== null && desvio > 3;
+
+    const dato = (etiqueta, valor, color) => `
+      <div style="background:var(--surface-alt); border-radius:8px; padding:8px 10px">
+        <p class="hint" style="margin:0 0 2px">${etiqueta}</p>
+        <p style="margin:0; font-size:14px; ${color ? `color:${color}` : ''}">${valor}</p>
+      </div>
+    `;
+
+    cont.innerHTML = `
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; margin-bottom:8px">
+        ${dato('Rondas', rondas.toLocaleString('es-PY'))}
+        ${dato('Apostado', Number(r.apostado).toLocaleString('es-PY'))}
+        ${dato('Pagado', Number(r.pagado).toLocaleString('es-PY'))}
+        ${dato('RTP real', rtpReal === null ? '—' : rtpReal.toFixed(2) + '%', alerta ? 'var(--danger)' : '')}
+        ${dato('RTP teórico', rtpTeorico === null ? '—' : rtpTeorico.toFixed(2) + '%')}
+        ${dato('Ganó', (Number(r.ganadas) / rondas * 100).toFixed(1) + '% de los giros')}
+        ${dato('Premio más alto', Number(r.premio_mayor).toLocaleString('es-PY'))}
+      </div>
+      ${!confiable
+        ? `<p class="hint" style="margin:0">Con ${rondas.toLocaleString('es-PY')} rondas el RTP real todavía no dice nada: hacen falta varios cientos para que empiece a acercarse al teórico.</p>`
+        : alerta
+          ? `<p class="hint error" style="margin:0">El RTP real se aleja ${desvio.toFixed(2)} puntos del teórico con ${rondas.toLocaleString('es-PY')} rondas. Vale la pena revisar el motor y la tabla de pagos.</p>`
+          : `<p class="hint" style="margin:0">Dentro de lo esperado para ${rondas.toLocaleString('es-PY')} rondas.</p>`}
+    `;
+  };
+  cargarHistorial();
+  el.querySelector('#ed-refrescar-hist').addEventListener('click', cargarHistorial);
 
   // Simulador: corre el MOTOR REAL (el mismo archivo que usa el
   // servidor cuando se juega con plata) un millón de veces y compara

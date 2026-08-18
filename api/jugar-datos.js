@@ -17,7 +17,7 @@ export default async function handler(req, res) {
   const [
     { data: simbolos }, { data: sonidos }, { data: efectos },
     { data: premios }, { data: digitos }, { data: capasLibres }, { data: botones },
-    { data: cadenasLuces },
+    { data: cadenasLuces }, { data: animaciones },
   ] = await Promise.all([
     supabaseAdmin.from('simbolos').select('*').eq('juego_id', juego.id).order('orden'),
     supabaseAdmin.from('sonidos').select('*').eq('juego_id', juego.id),
@@ -27,6 +27,7 @@ export default async function handler(req, res) {
     supabaseAdmin.from('capas_libres').select('*').eq('juego_id', juego.id).order('orden'),
     supabaseAdmin.from('botones').select('*').eq('juego_id', juego.id),
     supabaseAdmin.from('cadenas_luces').select('*').eq('juego_id', juego.id).order('orden'),
+    supabaseAdmin.from('animaciones_lottie').select('*').eq('juego_id', juego.id).order('orden'),
   ]);
 
   if (!simbolos?.length) return res.status(400).json({ error: 'Este juego todavía no tiene símbolos configurados' });
@@ -34,6 +35,6 @@ export default async function handler(req, res) {
   return res.status(200).json({
     juego, simbolos, sonidos: sonidos || [], efectos: efectos || [],
     premios: premios || [], digitos: digitos || [], capasLibres: capasLibres || [],
-    botones: botones || [], cadenasLuces: cadenasLuces || [],
+    botones: botones || [], cadenasLuces: cadenasLuces || [], animaciones: animaciones || [],
   });
 }
