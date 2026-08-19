@@ -13,6 +13,7 @@ import './styles.css';
 import { ANCHO_ESC, ALTO_ESC, construirCadena, iniciarAnimacionLuces } from './luces.js';
 import { mostrarTablaPagos } from './tabla-pagos.js';
 import { animarSimboloGanador, detenerAnimacionesSimbolos, mostrarAnimacionJuego, detenerAnimacionesJuego, precargarLottie } from './lottie.js';
+import { cargarMotor } from '../motor/registro.js';
 
 const params = new URLSearchParams(location.search);
 const slug = params.get('slug');
@@ -40,6 +41,11 @@ async function arrancar() {
       fetchJson(`/api/jugar-balance?token=${encodeURIComponent(token)}`),
     ]);
 
+    // Se carga el motor real de este juego antes de dibujar nada —
+    // hace falta saber cuántos rodillos tiene ANTES de armar el HTML
+    // de la grilla, no después.
+    const motorInfo = await cargarMotor(datos.juego.motor);
+
     // Intro: corre ANTES de la pantalla de carga, pero la descarga de
     // imágenes y sonidos arranca en paralelo — así la intro no le
     // suma tiempo de espera al jugador, solo tapa el que ya existía.
@@ -50,7 +56,7 @@ async function arrancar() {
     // aparece cuando puede y el jugador ve el juego armarse de a
     // pedazos, que da sensación de cosa a medio hacer.
     const pantalla = mostrarPantallaCarga(datos.juego);
-    render(datos, balance.saldo);
+    render(datos, balance.saldo, motorInfo);
 
     const juegoEl = raiz.querySelector('#jg-escenario');
     if (juegoEl) { juegoEl.style.opacity = '0'; juegoEl.style.transition = 'opacity .45s'; }
@@ -256,8 +262,9 @@ function ordenPorDefecto(juego) {
   return ['fondo_pantalla', 'marco', 'grilla', 'cartel'];
 }
 
-function render(datos, saldoInicial) {
+function render(datos, saldoInicial, motorInfo) {
   const { juego, simbolos, sonidos: sonidosData, efectos, premios, digitos, capasLibres, cadenasLuces, animaciones } = datos;
+  const { COLUMNAS, FILAS, FILA_PAGO } = motorInfo;
 
   const pos = conDefaults(juego);
   const ordenCapas = ordenPorDefecto(juego);
@@ -318,11 +325,10 @@ function render(datos, saldoInicial) {
           <p style="flex:1; text-align:center; font-weight:600; margin:0; letter-spacing:.04em">${escapeHtml(juego.nombre).toUpperCase()}</p>
         </div>` : ''}
 
-        <div id="jg-grilla" style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px; border-radius:12px; padding:8px; position:absolute; overflow:hidden; aspect-ratio:1">
+        <div id="jg-grilla" style="display:grid; grid-template-columns:repeat(${COLUMNAS},1fr); gap:6px; border-radius:12px; padding:8px; position:absolute; overflow:hidden; aspect-ratio:${COLUMNAS}/${FILAS}">
           <div id="jg-grilla-fondo" style="position:absolute; inset:0; background:${fondoBg}; z-index:0"></div>
-          <div style="position:relative; overflow:hidden; z-index:1"><div class="jg-cinta" id="jg-cinta-0" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>
-          <div style="position:relative; overflow:hidden; z-index:1"><div class="jg-cinta" id="jg-cinta-1" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>
-          <div style="position:relative; overflow:hidden; z-index:1"><div class="jg-cinta" id="jg-cinta-2" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>
+          ${Array.from({ length: COLUMNAS }, (_, i) => `
+          <div style="position:relative; overflow:hidden; z-index:1"><div class="jg-cinta" id="jg-cinta-${i}" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>`).join('')}
           <div id="jg-efecto-premio" style="position:absolute; inset:0; pointer-events:none; opacity:0; z-index:2"></div>
         </div>
 
@@ -415,7 +421,7 @@ function render(datos, saldoInicial) {
     (animaciones || []).filter((a) => a.evento === evento && a.lottie_url)
       .forEach((a) => mostrarAnimacionJuego(animRiveEl, a));
   };
-  const cintas = [0, 1, 2].map((i) => raiz.querySelector(`#jg-cinta-${i}`));
+  const cintas = Array.from({ length: COLUMNAS }, (_, i) => raiz.querySelector(`#jg-cinta-${i}`));
   const efectoPremio = raiz.querySelector('#jg-efecto-premio');
   const btnGirar = raiz.querySelector('#jg-girar');
   const saldoEl = raiz.querySelector('#jg-saldo');
@@ -787,8 +793,11 @@ function render(datos, saldoInicial) {
   //    durar lo que haga falta sin que se note dónde vuelve a
   //    empezar, y sin ir alargando la tira.
   const LOOP = 20;
-  const CELDAS_TIRA = LOOP + 3;
-  const DURACION_BASE = [1100, 1320, 1540];
+  const CELDAS_TIRA = LOOP + FILAS;
+  // Misma progresión de siempre (arranca en 1100ms, +220ms por cada
+  // rodillo hacia la derecha) — generalizada a cuantos rodillos tenga
+  // el motor, en vez de tres valores escritos a mano.
+  const DURACION_BASE = Array.from({ length: COLUMNAS }, (_, i) => 1100 + i * 220);
   // Cuánto se pasa el rodillo del punto final antes de acomodarse.
   // Es chico a propósito: lo justo para que se sienta que algo con
   // peso frenó, no un rebote de dibujo animado.
@@ -807,7 +816,8 @@ function render(datos, saldoInicial) {
     const div = document.createElement('div');
     div.style.cssText = `width:${tamano}px; height:${tamano}px; display:flex; align-items:center; justify-content:center; flex-shrink:0`;
     const img = document.createElement('img');
-    img.style.cssText = 'width:60%; height:60%; object-fit:contain; display:none';
+    const iconoPct = Number(juego.grilla_icono_tamano ?? 60);
+    img.style.cssText = `width:${iconoPct}%; height:${iconoPct}%; object-fit:contain; display:none`;
     img.draggable = false;
     const span = document.createElement('span');
     span.style.cssText = 'font-size:11px; color:#8fae9a; display:none';
@@ -832,7 +842,7 @@ function render(datos, saldoInicial) {
   // Estado de cada rodillo. `y` es la distancia total recorrida en
   // píxeles; lo que se dibuja es esa distancia en módulo del largo
   // del bucle.
-  const rodillos = [0, 1, 2].map(() => ({
+  const rodillos = Array.from({ length: COLUMNAS }, () => ({
     y: 0, v: 0, vMax: 0, celdaPx: 0, loopPx: 0, celdas: [],
     fase: 'quieto', destino: 0, salida: 0, distancia: 0, inicio: 0, duracion: 0, pasada: 0,
   }));
@@ -852,11 +862,11 @@ function render(datos, saldoInicial) {
         cinta.appendChild(celda);
         r.celdas.push(celda);
       }
-      // Relleno inicial: las 3 últimas copian a las 3 primeras para
-      // que el punto de repetición sea invisible.
+      // Relleno inicial: las últimas FILAS celdas copian a las
+      // primeras FILAS para que el punto de repetición sea invisible.
       const tira = Array.from({ length: LOOP }, () => elegirSimboloFiller(total));
       tira.forEach((sim, i) => ponerSimbolo(r.celdas[i], sim));
-      for (let i = 0; i < 3; i++) ponerSimbolo(r.celdas[LOOP + i], tira[i]);
+      for (let i = 0; i < FILAS; i++) ponerSimbolo(r.celdas[LOOP + i], tira[i]);
       cinta.style.transform = 'translate3d(0,0,0)';
       cinta.style.backfaceVisibility = 'hidden';
     });
@@ -877,8 +887,8 @@ function render(datos, saldoInicial) {
     const total = simbolos.reduce((a, s) => a + s.peso, 0) || 1;
     let grillaDemo;
     for (let intento = 0; intento < 40; intento++) {
-      grillaDemo = [0, 1, 2].map(() => [0, 1, 2].map(() => elegirSimboloFiller(total)));
-      if (!lineaPagaria([grillaDemo[0][1], grillaDemo[1][1], grillaDemo[2][1]])) break;
+      grillaDemo = Array.from({ length: COLUMNAS }, () => Array.from({ length: FILAS }, () => elegirSimboloFiller(total)));
+      if (!lineaPagaria(grillaDemo.map((col) => col[FILA_PAGO]))) break;
     }
     rodillos.forEach((r, col) => {
       if (!r.celdas.length) return;
@@ -972,10 +982,10 @@ function render(datos, saldoInicial) {
     const k = Math.floor(off / r.celdaPx);
     for (let d = 5; d < LOOP; d++) {
       const cand = (k + d) % LOOP;
-      if (cand < 3 || cand > LOOP - 3) continue;
+      if (cand < FILAS || cand > LOOP - FILAS) continue;
       return cand;
     }
-    return 3;
+    return FILAS;
   }
 
   // Frena hasta que las celdas del resultado queden exactamente en la
@@ -1018,7 +1028,7 @@ function render(datos, saldoInicial) {
     simbolosFinales.forEach((sim, fila) => {
       const i = ranura + fila;
       ponerSimbolo(r.celdas[i], sim);
-      if (i < 3) ponerSimbolo(r.celdas[LOOP + i], sim);
+      if (i < FILAS) ponerSimbolo(r.celdas[LOOP + i], sim);
       else if (i >= LOOP) ponerSimbolo(r.celdas[i - LOOP], sim);
     });
 
@@ -1110,7 +1120,7 @@ function render(datos, saldoInicial) {
     if (restante > 0) await new Promise((r) => setTimeout(r, restante));
 
     const { grilla, premio, nivel, saldo: saldoNuevo, simbolosGanadores } = resultado;
-    const filaPago = 1; // única línea de pago del motor, la del medio
+    const filaPago = FILA_PAGO; // la línea de pago la define el motor, no un número fijo acá
 
     // 4) Frenado. Los tres símbolos de cada rodillo se escriben en
     // celdas que en ese momento están fuera de la vista (solo cambia
@@ -1118,7 +1128,7 @@ function render(datos, saldoInicial) {
     // el rodillo recorre físicamente la distancia que falta hasta
     // ellos, desacelerando. El destino sale del resultado del
     // servidor y de ningún otro lado.
-    const ranuras = [0, 1, 2].map((col) => frenarRodillo(col, grilla[col]));
+    const ranuras = Array.from({ length: COLUMNAS }, (_, col) => frenarRodillo(col, grilla[col]));
     await esperarFrenado();
 
     saldo = Number(saldoNuevo);
@@ -1132,10 +1142,10 @@ function render(datos, saldoInicial) {
       // aunque fuera un premio de "dos iguales" (rodillos 1-2, la
       // tercera no había pagado nada y se marcaba igual, lo que
       // confundía la lectura de la jugada).
-      const columnasGanadoras = simbolosGanadores?.length ? simbolosGanadores : [0, 1, 2];
+      const columnasGanadoras = simbolosGanadores?.length ? simbolosGanadores : Array.from({ length: COLUMNAS }, (_, i) => i);
       rodillos.forEach((r, col) => {
         if (!columnasGanadoras.includes(col)) return;
-        const celdaGanadora = r.celdas[ranuras[col] + 1];
+        const celdaGanadora = r.celdas[ranuras[col] + FILA_PAGO];
         if (!celdaGanadora) return;
         celdaGanadora.classList.add('celda-ganadora');
         const simboloGanador = grilla[col][filaPago];

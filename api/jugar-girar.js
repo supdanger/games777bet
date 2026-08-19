@@ -1,5 +1,5 @@
 import { supabaseAdmin } from './_lib/supabaseAdmin.js';
-import { girar } from '../motor/clasico-3x3.js';
+import { cargarMotor } from '../motor/registro.js';
 import { apostar, premiar } from './_lib/proveedorCliente.js';
 
 // Resuelve un giro con plata real. El navegador manda la apuesta y
@@ -49,9 +49,11 @@ export default async function handler(req, res) {
     const simbolos = simbolosRes.data;
     if (!simbolos?.length) return res.status(400).json({ error: 'El juego no tiene símbolos configurados' });
 
-    // Resultado — se calcula acá, el mismo roundId (clientId) va en la
-    // llamada de premiar de abajo, para que Win777 pueda relacionar
-    // ambas llamadas con la misma jugada.
+    // Resultado — se calcula acá, con el motor que este juego tiene
+    // elegido (no siempre el mismo). El mismo roundId (clientId) va
+    // en la llamada de premiar de abajo, para que Win777 pueda
+    // relacionar ambas llamadas con la misma jugada.
+    const { girar } = await cargarMotor(juego.motor);
     const resultado = girar(simbolos);
 
     // Redondeado a 2 decimales: sin esto, un multiplicador con coma

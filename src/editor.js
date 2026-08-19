@@ -1,6 +1,6 @@
 import { supabase } from './supabase.js';
 import { analizar } from './motor.js';
-import { girar } from '../motor/clasico-3x3.js';
+import { cargarMotor, MOTORES_DISPONIBLES } from '../motor/registro.js';
 import { renderPreview } from './preview.js';
 import { listarClientesActivos } from './clientes.js';
 
@@ -36,6 +36,19 @@ export function renderEditor(el, juego, onCambio) {
   ];
   let grupoActual = 'jugabilidad';
 
+  // El motor de este juego se elige una sola vez, al crearlo (no se
+  // puede cambiar después — cambiar de motor implicaría rehacer toda
+  // la tabla de pagos). Se carga acá para saber cuántos rodillos usar
+  // en el RTP y en el simulador; hasta que resuelva, se calcula como
+  // si fueran 3 (el motor por defecto) y se recalcula solo cuando
+  // llega el valor real.
+  let columnasMotor = 3;
+  cargarMotor(juego.motor).then((mod) => {
+    columnasMotor = mod.COLUMNAS || 3;
+    pintarTabla();
+    calcular();
+  });
+
   // "Guardado hace Xs": un solo reloj para todo el editor. Se marca
   // desde cualquier punto que realmente escriba en la base (subida de
   // archivo, edición de símbolo, efecto, cliente) — no hace falta que
@@ -55,7 +68,7 @@ export function renderEditor(el, juego, onCambio) {
   // antes de publicar, pero visible mientras vas armando, no recién
   // al final. Un punto ámbar no bloquea nada, solo avisa.
   const puntosGrupo = () => {
-    const rtp = simbolos.length ? analizar(simbolos).rtp : 0;
+    const rtp = simbolos.length ? analizar(simbolos, columnasMotor).rtp : 0;
     return {
       general: Number(juego.min_bet) <= 0 || Number(juego.max_bet) < Number(juego.min_bet),
       arte: !juego.portada_url,
@@ -92,7 +105,7 @@ export function renderEditor(el, juego, onCambio) {
   // Franja siempre visible, sin importar en qué grupo estés — RTP,
   // versión (lo que ve Win777 al sincronizar) y si está publicado.
   const pintarResumen = () => {
-    const rtp = simbolos.length ? analizar(simbolos).rtp.toFixed(1) + '%' : '--';
+    const rtp = simbolos.length ? analizar(simbolos, columnasMotor).rtp.toFixed(1) + '%' : '--';
     el.querySelector('#ed-resumen').innerHTML = `
       <span class="ed-resumen-chip">RTP ${rtp}</span>
       <span class="ed-resumen-chip">versión ${juego.version || 1}</span>
@@ -112,6 +125,10 @@ export function renderEditor(el, juego, onCambio) {
     const badge = el.querySelector('#ed-header-estado');
     badge.className = `badge ${juego.estado}`;
     badge.textContent = { borrador: 'Borrador', en_prueba: 'En prueba', listo: 'Listo' }[juego.estado];
+    const chipMotor = el.querySelector('#ed-header-motor');
+    if (chipMotor) {
+      chipMotor.textContent = MOTORES_DISPONIBLES.find((m) => m.valor === juego.motor)?.etiqueta || juego.motor || 'motor desconocido';
+    }
   };
 
   el.innerHTML = `
@@ -121,6 +138,7 @@ export function renderEditor(el, juego, onCambio) {
         <p style="margin:0; font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${escapeHtml(juego.nombre)}</p>
         <p class="hint" style="margin:2px 0 0; display:flex; align-items:center; gap:8px">
           <span class="badge ${juego.estado}" id="ed-header-estado">${{ borrador: 'Borrador', en_prueba: 'En prueba', listo: 'Listo' }[juego.estado]}</span>
+          <span class="ed-resumen-chip" id="ed-header-motor"></span>
           <span id="ed-header-guardado"></span>
         </p>
       </div>
@@ -258,6 +276,8 @@ export function renderEditor(el, juego, onCambio) {
         <label style="font-size:11px; color:var(--text-dim); white-space:nowrap">peso<input data-i="${i}" data-campo="peso" type="number" value="${s.peso}" style="width:55px" /></label>
         <label style="font-size:11px; color:var(--text-dim); white-space:nowrap">x3<input data-i="${i}" data-campo="pago_tres" type="number" value="${s.pago_tres}" style="width:65px" /></label>
         <label style="font-size:11px; color:var(--text-dim); white-space:nowrap">x2<input data-i="${i}" data-campo="pago_dos" type="number" value="${s.pago_dos}" style="width:55px" /></label>
+        ${columnasMotor >= 4 ? `<label style="font-size:11px; color:var(--text-dim); white-space:nowrap">x4<input data-i="${i}" data-campo="pago_cuatro" type="number" value="${s.pago_cuatro ?? 0}" style="width:65px" /></label>` : ''}
+        ${columnasMotor >= 5 ? `<label style="font-size:11px; color:var(--text-dim); white-space:nowrap">x5<input data-i="${i}" data-campo="pago_cinco" type="number" value="${s.pago_cinco ?? 0}" style="width:65px" /></label>` : ''}
         <button data-rive-toggle="${i}" aria-label="Animación del símbolo" style="${(s.lottie_chico_url || s.lottie_grande_url) ? 'color:var(--accent); border-color:var(--accent)' : ''}">🎬</button>
         <button data-borrar="${i}" aria-label="Quitar">✕</button>
       </div>
@@ -380,6 +400,7 @@ export function renderEditor(el, juego, onCambio) {
     if (s.id) {
       await supabase.from('simbolos').update({
         nombre: s.nombre, peso: s.peso, pago_tres: s.pago_tres, pago_dos: s.pago_dos, icono_url: s.icono_url,
+        pago_cuatro: s.pago_cuatro, pago_cinco: s.pago_cinco,
         lottie_chico_url: s.lottie_chico_url, lottie_grande_url: s.lottie_grande_url,
       }).eq('id', s.id);
     } else {
@@ -392,7 +413,11 @@ export function renderEditor(el, juego, onCambio) {
   };
 
   el.querySelector('#ed-agregar').addEventListener('click', async () => {
-    simbolos.push({ nombre: 'nuevo', peso: 5, pago_tres: 10, pago_dos: 1 });
+    simbolos.push({
+      nombre: 'nuevo', peso: 5, pago_tres: 10, pago_dos: 1,
+      ...(columnasMotor >= 4 ? { pago_cuatro: 25 } : {}),
+      ...(columnasMotor >= 5 ? { pago_cinco: 60 } : {}),
+    });
     await guardarSimbolo(simbolos[simbolos.length - 1]);
     pintarTabla(); calcular();
   });
@@ -638,7 +663,7 @@ export function renderEditor(el, juego, onCambio) {
 
     const rondas = Number(r.rondas);
     const rtpReal = r.rtp_real === null ? null : Number(r.rtp_real);
-    const { rtp: rtpTeorico } = simbolos.length ? analizar(simbolos) : { rtp: null };
+    const { rtp: rtpTeorico } = simbolos.length ? analizar(simbolos, columnasMotor) : { rtp: null };
     const desvio = (rtpReal !== null && rtpTeorico !== null) ? Math.abs(rtpReal - rtpTeorico) : null;
 
     // Con pocas rondas el RTP real no significa nada: puede estar
@@ -693,6 +718,7 @@ export function renderEditor(el, juego, onCambio) {
     // "Simulando..." antes de trabarse con el millón de giros.
     await new Promise((r) => setTimeout(r, 30));
 
+    const { girar } = await cargarMotor(juego.motor);
     const GIROS = 1_000_000;
     let apostado = 0, devuelto = 0, ganadas = 0, mayor = 0;
     const porNivel = { dos_iguales: 0, tres_iguales: 0, premio_mayor: 0 };
@@ -709,7 +735,7 @@ export function renderEditor(el, juego, onCambio) {
     }
 
     const rtpReal = (devuelto / apostado) * 100;
-    const { rtp: rtpTeorico } = analizar(simbolos);
+    const { rtp: rtpTeorico } = analizar(simbolos, columnasMotor);
     const desvio = Math.abs(rtpReal - rtpTeorico);
 
     const color = desvio > 1.5 ? 'var(--danger)' : 'var(--text-dim)';
@@ -736,7 +762,7 @@ export function renderEditor(el, juego, onCambio) {
     if (sinIcono.length) errores.push(`${sinIcono.length} símbolo(s) sin ícono: ${sinIcono.map((s) => s.nombre).join(', ')}.`);
 
     if (simbolos.length) {
-      const { rtp } = analizar(simbolos);
+      const { rtp } = analizar(simbolos, columnasMotor);
       if (rtp > 100) errores.push(`El RTP es ${rtp.toFixed(2)}% — el juego pierde plata en cada giro.`);
       else if (rtp < 85 || rtp > 97) avisos.push(`RTP de ${rtp.toFixed(2)}%, fuera del rango habitual (85-97%).`);
     }

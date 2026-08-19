@@ -2,6 +2,7 @@ import { supabase } from './supabase.js';
 import { renderEditor } from './editor.js';
 import { renderClientes } from './clientes.js';
 import { renderCatalogo } from './catalogo.js';
+import { MOTORES_DISPONIBLES, MOTOR_POR_DEFECTO } from '../motor/registro.js';
 
 const ESTADOS = { borrador: 'Borrador', en_prueba: 'En prueba', listo: 'Listo' };
 
@@ -22,6 +23,9 @@ export function renderApp(raiz, session, onSalir) {
 
       <div style="display:flex; gap:8px; margin-bottom:20px">
         <input id="ap-nuevo-nombre" placeholder="Nombre del juego nuevo" style="flex:1" />
+        <select id="ap-nuevo-motor" style="width:auto">
+          ${MOTORES_DISPONIBLES.map((m) => `<option value="${m.valor}" ${m.valor === MOTOR_POR_DEFECTO ? 'selected' : ''}>${m.etiqueta}</option>`).join('')}
+        </select>
         <button class="primary" id="ap-crear">Crear juego</button>
         <button id="ap-duplicar" style="display:none">Duplicar el seleccionado</button>
         <button id="ap-eliminar" style="display:none; color:var(--danger)">Eliminar</button>
@@ -179,9 +183,10 @@ export function renderApp(raiz, session, onSalir) {
     const nombre = input.value.trim();
     if (!nombre) return;
 
+    const motor = raiz.querySelector('#ap-nuevo-motor').value;
     const slug = nombre.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') + '-' + Date.now().toString(36);
 
-    const { data, error } = await supabase.from('juegos').insert({ nombre, slug }).select().single();
+    const { data, error } = await supabase.from('juegos').insert({ nombre, slug, motor }).select().single();
 
     if (error) { alert(error.message); return; }
 

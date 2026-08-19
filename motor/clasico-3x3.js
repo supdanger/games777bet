@@ -14,6 +14,10 @@
 // comporte siempre igual.
 // =========================================================
 
+export const COLUMNAS = 3;
+export const FILAS = 3;
+export const FILA_PAGO = 1;
+
 export function elegirSimbolo(simbolos, total) {
   let r = Math.random() * total;
 

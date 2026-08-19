@@ -8,13 +8,13 @@
 // resultado en vivo sobre el tamaño real de un celular.
 
 import { supabase } from './supabase.js';
-import { girar, elegirSimbolo } from '../motor/clasico-3x3.js';
+import { cargarMotor, resolverNivel } from '../motor/registro.js';
 import { ANCHO_ESC, ALTO_ESC, construirCadena, iniciarAnimacionLuces } from './luces.js';
 import { mostrarTablaPagos } from './tabla-pagos.js';
 import { animarSimboloGanador, detenerAnimacionesSimbolos, mostrarAnimacionJuego, detenerAnimacionesJuego } from './lottie.js';
 
-function celdaHtml(s) {
-  if (s.icono_url) return `<img src="${s.icono_url}" style="width:60%; height:60%; object-fit:contain" />`;
+function celdaHtml(s, iconoTamano = 60) {
+  if (s.icono_url) return `<img src="${s.icono_url}" style="width:${iconoTamano}%; height:${iconoTamano}%; object-fit:contain" />`;
   return `<span style="font-size:11px; color:#8fae9a">${s.nombre}</span>`;
 }
 
@@ -28,6 +28,7 @@ function conDefaults(juego) {
     marco_ancho: juego.marco_ancho ?? 100, marco_alto: juego.marco_alto ?? 100,
     grilla_x: juego.grilla_x ?? 50, grilla_y: juego.grilla_y ?? 46,
     grilla_tamano: juego.grilla_tamano ?? 70,
+    grilla_icono_tamano: juego.grilla_icono_tamano ?? 60,
     cartel_x: juego.cartel_x ?? 50, cartel_y: juego.cartel_y ?? 15,
     cartel_ancho: juego.cartel_ancho ?? 75, cartel_alto: juego.cartel_alto ?? 16,
     fondo_pantalla_blur: juego.fondo_pantalla_blur ?? 0, fondo_pantalla_oscurecer: juego.fondo_pantalla_oscurecer ?? 0,
@@ -60,7 +61,7 @@ const CAMPOS_POR_CAPA = {
   ],
   grilla: [
     ['grilla_x', 'Posición X', -20, 120], ['grilla_y', 'Posición Y', -20, 120],
-    ['grilla_tamano', 'Tamaño', 30, 100],
+    ['grilla_tamano', 'Tamaño', 30, 100], ['grilla_icono_tamano', 'Tamaño del ícono', 20, 100],
   ],
   marco: [
     ['marco_x', 'Posición X', -50, 150], ['marco_y', 'Posición Y', -50, 150],
@@ -87,6 +88,10 @@ const NIVELES_PREMIO = [
 
 export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   if (!simbolos.length) { alert('Agregá símbolos antes de probar el juego.'); return; }
+
+  // Igual que en la pantalla real: hace falta saber cuántos rodillos
+  // tiene el motor de este juego ANTES de armar la grilla, no después.
+  const { girar, elegirSimbolo, COLUMNAS, FILAS, FILA_PAGO } = await cargarMotor(juego.motor);
 
   const pos = conDefaults(juego);
   let ordenCapas = ordenPorDefecto(juego);
@@ -212,11 +217,10 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
           <button id="pv-info" aria-label="Ver información del juego" style="width:28px; height:28px; padding:0; border-radius:50%; flex-shrink:0">ℹ</button>
         </div>
 
-        <div id="pv-grilla" style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px; border-radius:12px; padding:8px; position:absolute; overflow:hidden; aspect-ratio:1">
+        <div id="pv-grilla" style="display:grid; grid-template-columns:repeat(${COLUMNAS},1fr); gap:6px; border-radius:12px; padding:8px; position:absolute; overflow:hidden; aspect-ratio:${COLUMNAS}/${FILAS}">
           <div id="pv-grilla-fondo" style="position:absolute; inset:0; background:${fondoBg}; z-index:0"></div>
-          <div class="pv-columna" data-col="0" style="position:relative; overflow:hidden; z-index:1"><div class="pv-cinta" id="pv-cinta-0" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>
-          <div class="pv-columna" data-col="1" style="position:relative; overflow:hidden; z-index:1"><div class="pv-cinta" id="pv-cinta-1" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>
-          <div class="pv-columna" data-col="2" style="position:relative; overflow:hidden; z-index:1"><div class="pv-cinta" id="pv-cinta-2" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>
+          ${Array.from({ length: COLUMNAS }, (_, i) => `
+          <div class="pv-columna" data-col="${i}" style="position:relative; overflow:hidden; z-index:1"><div class="pv-cinta" id="pv-cinta-${i}" style="display:flex; flex-direction:column; position:absolute; top:0; left:0; width:100%"></div></div>`).join('')}
           <div id="pv-efecto-premio" style="position:absolute; inset:0; pointer-events:none; opacity:0; z-index:2"></div>
         </div>
 
@@ -599,6 +603,13 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
           panel.querySelector(`#out-${clave}`).textContent = input.value + (esFiltro && clave.includes('blur') ? 'px' : '%');
           aplicarPosiciones();
           aplicarFiltros();
+          // Las celdas de la grilla nacen con un tamaño en píxeles
+          // medido una sola vez — si cambia el tamaño del marco o del
+          // ícono y no se reconstruyen, quedan pegadas a la medida
+          // vieja aunque el marco de afuera sí haya cambiado. Solo
+          // hace falta en la pestaña Grilla; el resto de las capas no
+          // tocan el tamaño de ninguna celda.
+          if (capaActual === 'grilla' && !girando) pintarGrillaInicial();
         });
       });
     }
@@ -655,7 +666,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   const apuestaMax = Number(juego.max_bet) || 100000;
   let apuesta = apuestaMin;
   let velocidad = 1;
-  const cintas = [0, 1, 2].map((i) => overlay.querySelector(`#pv-cinta-${i}`));
+  const cintas = Array.from({ length: COLUMNAS }, (_, i) => overlay.querySelector(`#pv-cinta-${i}`));
   const efectoPremio = overlay.querySelector('#pv-efecto-premio');
   const btnGirar = overlay.querySelector('#pv-girar');
   const girarImgEl = overlay.querySelector('#pv-girar-img');
@@ -1838,7 +1849,9 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // Cuánto "relleno" tiene cada cinta antes de los 3 símbolos finales
   // — más relleno, más sensación de recorrido antes de frenar.
   const RELLENO = 18;
-  const DURACION_COLUMNA = [1400, 1800, 2200];
+  // Misma progresión de siempre (1400ms + 400ms por cada rodillo
+  // hacia la derecha), generalizada a cuantos rodillos tenga el motor.
+  const DURACION_COLUMNA = Array.from({ length: COLUMNAS }, (_, i) => 1400 + i * 400);
 
   // Arma una cinta: RELLENO símbolos al azar + los 3 definitivos al
   // final. La animación mueve la cinta hasta dejar esos últimos 3
@@ -1866,7 +1879,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   function crearCeldaCinta(simbolo, tamano) {
     const div = document.createElement('div');
     div.style.cssText = `width:${tamano}px; height:${tamano}px; display:flex; align-items:center; justify-content:center; flex-shrink:0`;
-    div.innerHTML = celdaHtml(simbolo);
+    div.innerHTML = celdaHtml(simbolo, pos.grilla_icono_tamano);
     return div;
   }
 
@@ -1899,6 +1912,12 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
   // el cuadro de premio, anima el símbolo con su Rive y lanza las
   // animaciones del evento. Así se prueba todo junto sin depender de
   // que la suerte acompañe.
+  //
+  // Las combinaciones posibles dependen de cuántas columnas tenga el
+  // motor: el 3x3 solo puede tener "dos" o "tres" iguales, el 5x3
+  // suma "cuatro" — el desplegable se arma según corresponda, no
+  // fijo a un motor en particular.
+  const ETIQUETA_CADENA = { 2: 'Dos iguales', 3: 'Tres iguales', 4: 'Cuatro iguales', 5: 'Cinco iguales' };
   overlay.querySelector('#pv-probar-premio').addEventListener('click', () => {
     if (girando) return;
     const anterior = overlay.querySelector('#pv-probador');
@@ -1916,10 +1935,8 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
         </select>
       </label>
       <label style="display:block; margin-bottom:10px; font-size:12px">Combinación
-        <select id="pp-nivel" style="width:100%">
-          <option value="dos_iguales">Dos iguales (rodillos 1-2)</option>
-          <option value="tres_iguales">Tres iguales</option>
-          <option value="premio_mayor">Premio mayor</option>
+        <select id="pp-cadena" style="width:100%">
+          ${Array.from({ length: COLUMNAS - 1 }, (_, i) => i + 2).map((c) => `<option value="${c}">${ETIQUETA_CADENA[c] || c + ' iguales'}</option>`).join('')}
         </select>
       </label>
       <button class="primary" id="pp-simular" style="width:100%">Simular</button>
@@ -1929,29 +1946,27 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
 
     caja.querySelector('#pp-simular').addEventListener('click', () => {
       const simbolo = simbolos[Number(caja.querySelector('#pp-simbolo').value)];
-      const nivelElegido = caja.querySelector('#pp-nivel').value;
+      const cadena = Number(caja.querySelector('#pp-cadena').value);
       if (!simbolo) return;
 
       const otro = simbolos.find((s) => s.nombre !== simbolo.nombre) || simbolo;
       const alAzar = () => simbolos[Math.floor(Math.random() * simbolos.length)];
 
-      // La línea de pago es la fila del medio; arriba y abajo van
-      // símbolos cualesquiera, como en un giro real.
-      const columnaCon = (medio) => [alAzar(), medio, alAzar()];
-      const dosIguales = nivelElegido === 'dos_iguales';
-      const grillaForzada = [
-        columnaCon(simbolo),
-        columnaCon(simbolo),
-        columnaCon(dosIguales ? otro : simbolo),
-      ];
+      // La línea de pago es la fila del medio; el resto de cada
+      // columna va con símbolos cualesquiera, como en un giro real.
+      const columnaCon = (medio) => Array.from({ length: FILAS }, (_, fila) => (fila === FILA_PAGO ? medio : alAzar()));
+      const grillaForzada = Array.from({ length: COLUMNAS }, (_, col) =>
+        columnaCon(col < cadena ? simbolo : otro));
 
-      const pago = dosIguales ? (Number(simbolo.pago_dos) || 0) : (Number(simbolo.pago_tres) || 0);
+      const { premio, nivel } = resolverNivel(simbolos, simbolo, cadena, COLUMNAS);
+      if (!nivel) { alert('Ese símbolo no tiene pago configurado para esa combinación.'); return; }
+
       resultadoForzado = {
         grilla: grillaForzada,
-        premio: pago,
-        nivel: nivelElegido === 'dos_iguales' ? 'dos_iguales' : nivelElegido,
-        simbolosGanadores: dosIguales ? [0, 1] : [0, 1, 2],
-        filaPago: 1,
+        premio,
+        nivel,
+        simbolosGanadores: Array.from({ length: cadena }, (_, i) => i),
+        filaPago: FILA_PAGO,
       };
 
       caja.remove();
@@ -1985,7 +2000,7 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     detenerAnimacionesJuego();
     lanzarAnimaciones('girar');
 
-    const tamanoCelda = [0, 1, 2].map((col) => armarCinta(col, grilla[col], total));
+    const tamanoCelda = Array.from({ length: COLUMNAS }, (_, col) => armarCinta(col, grilla[col], total));
 
     // Forzar que el navegador registre la posición inicial antes de
     // animar — si no, "salta" directo al final sin mostrar el giro.
@@ -2005,14 +2020,15 @@ export async function renderPreview({ juego, simbolos, sonidos, efectos }) {
     if (premio > 0) {
       mostrarPremio(ganancia, nivel);
       lanzarAnimaciones(nivel === 'premio_mayor' ? 'premio_mayor' : 'premio_chico');
-      // El símbolo del medio de cada cinta es siempre el de la línea
-      // de pago (índice RELLENO+1: los 3 finales son [arriba, medio,
-      // abajo], en ese orden, al final de cada cinta). Solo se marcan
+      // El símbolo de la línea de pago de cada cinta es siempre el
+      // que está en la posición FILA_PAGO dentro de los últimos
+      // símbolos agregados al final de la cinta (los FILAS finales
+      // son [arriba, medio, abajo, ...] en ese orden). Solo se marcan
       // y animan las columnas que REALMENTE forman parte del premio.
-      const columnasGanadoras = simbolosGanadores?.length ? simbolosGanadores : [0, 1, 2];
+      const columnasGanadoras = simbolosGanadores?.length ? simbolosGanadores : Array.from({ length: COLUMNAS }, (_, i) => i);
       cintas.forEach((cinta, col) => {
         if (!columnasGanadoras.includes(col)) return;
-        const celdaGanadora = cinta.children[RELLENO + 1];
+        const celdaGanadora = cinta.children[RELLENO + FILA_PAGO];
         if (!celdaGanadora) return;
         celdaGanadora.classList.add('celda-ganadora');
         const simboloGanador = grilla[col][filaPago];
